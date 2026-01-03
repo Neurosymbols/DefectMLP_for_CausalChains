@@ -1,0 +1,71 @@
+{
+  "confusion_matrix": [
+    [
+      28732,
+      315,
+      311
+    ],
+    [
+      0,
+      315,
+      0
+    ],
+    [
+      0,
+      0,
+      327
+    ]
+  ],
+  "metrics": {
+    "class_0": {
+      "precision": 1.0,
+      "recall": 0.9786770215954765,
+      "f1_score": 0.9892236185229816,
+      "support": 29358,
+      "tp": 28732,
+      "fp": 0,
+      "fn": 626,
+      "tn": 642
+    },
+    "class_1": {
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1_score": 0.6666666666666666,
+      "support": 315,
+      "tp": 315,
+      "fp": 315,
+      "fn": 0,
+      "tn": 29370
+    },
+    "class_2": {
+      "precision": 0.512539184952978,
+      "recall": 1.0,
+      "f1_score": 0.6777202072538859,
+      "support": 327,
+      "tp": 327,
+      "fp": 311,
+      "fn": 0,
+      "tn": 29362
+    },
+    "weighted_avg": {
+      "precision": 0.9894366771159874,
+      "recall": 0.9791333333333333,
+      "f1_score": 0.9824413833456571,
+      "support": 30000
+    },
+    "macro_avg": {
+      "precision": 0.6708463949843261,
+      "recall": 0.9928923405318256,
+      "f1_score": 0.7778701641478447,
+      "support": 30000
+    },
+    "accuracy": 0.9791333333333333
+  },
+  "ece": 0.012917990912993754,
+  "class_names": [
+    "No Defect",
+    "Open Circuit",
+    "Solder Bridging"
+  ],
+  "n_samples": 30000
+}
