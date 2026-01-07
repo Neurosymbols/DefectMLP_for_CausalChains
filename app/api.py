@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from typing import Any
 from pydantic import BaseModel, field_validator
 from .mlp_inference import load_model
 from .final_inference import predict_complete
@@ -13,6 +14,7 @@ model, scaler, feature_names = load_model(
 )
 
 class PredictRequest(BaseModel):
+    pcb_id: str
     paste_volume: float
     stencil_thickness: float
     paste_viscosity: float
@@ -21,7 +23,9 @@ class PredictRequest(BaseModel):
     
     @field_validator('*')
     @classmethod
-    def no_negative_values(cls, v):
+    def no_negative_values(cls, v: Any, info):
+        if info.field_name == "pcb_id":
+            return v
         if v < 0:
             raise ValueError("Value cannot be negative")
         return v
