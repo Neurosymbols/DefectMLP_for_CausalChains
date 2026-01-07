@@ -1,6 +1,5 @@
 # run.py
 import argparse
-import torch
 
 from app.data_prep import prepare_data_for_training, save_preprocessing_artifacts
 from app.dataset_loader import (
@@ -11,8 +10,7 @@ from app.dataset_loader import (
 from app.model import create_model
 from app.train import train_model, TrainingConfig
 from app.evaluate.evaluate_multitask import evaluate_multitask_simple
-from app.inference import predict_board
-from app.model_loading import load_model
+from app.mlp_inference import predict, prepare_features, load_model
 
 
 PREPROCESSING_PATH = "./app/multitask_model/preprocessing_artifacts.pkl"
@@ -96,7 +94,7 @@ def run_inference(dataloaders):
         "ambient_temperature": 25
     }
 
-    result = predict_board(board, model, scaler, features)
+    result = predict(board, model, scaler, features)
     print(result)
 
 

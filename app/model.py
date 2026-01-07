@@ -12,10 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional
-
-HIDDEN_DIMS = [256, 128, 64]
-DROPOUT_RATE = 0.3
-USE_BATCHNORM = True
+from .constants import *
 
 # ============================================================================
 # MAIN MODEL: ENGINEERED FEATURES MLP

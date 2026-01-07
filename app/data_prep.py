@@ -18,15 +18,8 @@ import pickle
 
 from .feature_engg import engineer_all_features, get_feature_columns
 from .add_mech_labels import validate_mechanism_labels, label_mechanisms
+from .constants import *
 
-MONGO_URI = 'mongodb://localhost:27017/'
-DB = 'pcb_manufacturing'
-COL = 'synthetic_boards'
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
-GROUP_COL = 'batch_id'
-RANDOM_SEED = 42
 # ============================================================================
 # DATA LOADING
 # ============================================================================

@@ -12,43 +12,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Tuple
 from .add_mech_labels import label_mechanisms, validate_mechanism_labels
-
-# ============================================================================
-# CONFIGURATION: Parameter Specifications
-# ============================================================================
-
-PARAMETER_SPECS = {
-    'paste_volume': {
-        'nominal': 0.040,       # mm³
-        'tolerance': 0.004,     # ±0.004
-        'usl': 0.044,
-        'lsl': 0.036,
-    },
-    'stencil_thickness': {
-        'nominal': 100,       # mm (100 μm)
-        'tolerance': 5,     # ±5 μm
-        'usl': 105,
-        'lsl': 95,
-    },
-    'paste_viscosity': {
-        'nominal': 200.0,       # Pa·s
-        'tolerance': 50.0,      # ±50 Pa·s
-        'usl': 250.0,
-        'lsl': 150.0,
-    },
-    'ambient_rh': {
-        'nominal': 40.0,        # %
-        'tolerance': 10.0,      # ±10%
-        'usl': 50.0,
-        'lsl': 30.0,
-    },
-    'ambient_temperature': {
-        'nominal': 23.0,        # °C
-        'tolerance': 3.0,       # ±3°C
-        'usl': 26.0,
-        'lsl': 20.0,
-    }
-}
+from .constants import PARAMETER_SPECS
 
 # ============================================================================
 # FEATURE ENGINEERING FUNCTIONS
