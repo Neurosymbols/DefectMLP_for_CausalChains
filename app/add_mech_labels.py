@@ -1,11 +1,24 @@
+# in mlp directory
+import pandas as pd
+
 def label_mechanisms(df):
     """
     Label mechanism failure causes based on physics rules
     
+    Mechanisms are MUTUALLY EXCLUSIVE:
+    - Aperture overfill: TOO MUCH paste
+    - Poor paste transfer: TOO LITTLE paste
+    
+    Priority: If both conditions true, aperture overfill takes precedence
+    
     Rules:
-    1. Aperture overfill: StencilThickness > USL
-    2. PostPrintSpread: PasteViscosity < LSL AND AmbientRh > USL
-    3. Poorpastetransfer: StencilThickness < LSL OR PasteViscosity > USL
+    1. Aperture overfill: 
+       - StencilThickness > USL OR PasteViscosity < LSL
+       - PasteViscosity < LSL AND AmbientRh > USL
+    
+    2. Poor paste transfer:
+       - StencilThickness < LSL OR PasteViscosity > USL
+       - AmbientRh < LSL AND PasteViscosity > USL
     
     Args:
         df: DataFrame with process parameters
@@ -13,33 +26,60 @@ def label_mechanisms(df):
     Returns:
         DataFrame with added mechanism columns (binary 0/1)
     """
-    # Define specification limits (from your specs)
-    STENCIL_THICKNESS_USL = 110     # um
-    STENCIL_THICKNESS_LSL = 95      # um
+    # Define specification limits
+    STENCIL_THICKNESS_USL = 105     # µm
+    STENCIL_THICKNESS_LSL = 95      # µm
     PASTE_VISCOSITY_USL = 250       # Pa·s
     PASTE_VISCOSITY_LSL = 150       # Pa·s
     AMBIENT_RH_USL = 50             # %
+    AMBIENT_RH_LSL = 30             # %
     
     df = df.copy()
     
-    # Rule 1: Aperture overfill
-    df['apertureoverfill'] = (
-        df['stencil_thickness'] > STENCIL_THICKNESS_USL
-    ).astype(int)
+    # ========================================================================
+    # RULE 1: APERTURE OVERFILL (too much paste)
+    # ========================================================================
+    aperture_overfill_conditions = (
+        # Condition 1: High stencil OR low viscosity
+        (df['stencil_thickness'] > STENCIL_THICKNESS_USL) |
+        (df['paste_viscosity'] < PASTE_VISCOSITY_LSL) |
+        # Condition 2: Low viscosity AND high RH
+        ((df['paste_viscosity'] < PASTE_VISCOSITY_LSL) & 
+         (df['ambient_rh'] > AMBIENT_RH_USL))
+    )
     
-    # Rule 2: PostPrintSpread
-    df['postprintspread'] = (
-        (df['paste_viscosity'] < PASTE_VISCOSITY_LSL) & 
-        (df['ambient_rh'] > AMBIENT_RH_USL)
-    ).astype(int)
-    
-    # Rule 3: Poorpastetransfer
-    df['poorpastetransfer'] = (
+    # ========================================================================
+    # RULE 2: POOR PASTE TRANSFER (too little paste)
+    # ========================================================================
+    poor_paste_transfer_conditions = (
+        # Condition 1: Low stencil OR high viscosity
         (df['stencil_thickness'] < STENCIL_THICKNESS_LSL) |
-        (df['paste_viscosity'] > PASTE_VISCOSITY_USL)
-    ).astype(int)
+        (df['paste_viscosity'] > PASTE_VISCOSITY_USL) |
+        # Condition 2: Low RH AND high viscosity
+        ((df['ambient_rh'] < AMBIENT_RH_LSL) & 
+         (df['paste_viscosity'] > PASTE_VISCOSITY_USL))
+    )
+    
+    # ========================================================================
+    # MUTUAL EXCLUSIVITY: Priority to aperture overfill
+    # ========================================================================
+    
+    # Initialize both as 0
+    df['apertureoverfill'] = 0
+    df['poorpastetransfer'] = 0
+    
+    # Assign aperture overfill first (higher priority)
+    df.loc[aperture_overfill_conditions, 'apertureoverfill'] = 1
+    
+    # Assign poor paste transfer ONLY if aperture overfill is NOT present
+    df.loc[poor_paste_transfer_conditions & ~aperture_overfill_conditions, 'poorpastetransfer'] = 1
+    
+    # Verify mutual exclusivity
+    assert ((df['apertureoverfill'] == 1) & (df['poorpastetransfer'] == 1)).sum() == 0, \
+        "ERROR: Both mechanisms present on same board!"
     
     return df
+
 
 def validate_mechanism_labels(df):
     """
@@ -48,7 +88,7 @@ def validate_mechanism_labels(df):
     Args:
         df: DataFrame with mechanism labels
     """
-    mechanism_cols = ['apertureoverfill', 'postprintspread', 'poorpastetransfer']
+    mechanism_cols = ['apertureoverfill', 'poorpastetransfer']
     
     print("\n" + "="*60)
     print("MECHANISM LABEL STATISTICS")
@@ -60,38 +100,29 @@ def validate_mechanism_labels(df):
             pct = df[col].mean() * 100
             print(f"{col:20s}: {count:6d} ({pct:5.2f}%)")
     
-    # Co-occurrence analysis
+    # Mutual exclusivity check
     print("\n" + "="*60)
-    print("MECHANISM CO-OCCURRENCE")
+    print("MUTUAL EXCLUSIVITY CHECK")
     print("="*60)
     
-    # Check if we have the mechanisms
-    if all(col in df.columns for col in ['apertureoverfill', 'postprintspread', 'poorpastetransfer']):
-        all_three = (
-            (df['apertureoverfill'] == 1) & 
-            (df['postprintspread'] == 1) & 
-            (df['poorpastetransfer'] == 1)
-        ).sum()
-        
-        any_two = (
-            ((df['apertureoverfill'] == 1) & (df['postprintspread'] == 1)) |
-            ((df['apertureoverfill'] == 1) & (df['poorpastetransfer'] == 1)) |
-            ((df['postprintspread'] == 1) & (df['poorpastetransfer'] == 1))
-        ).sum()
-        
-        exactly_one = (
-            (df['apertureoverfill'] + df['postprintspread'] + df['poorpastetransfer']) == 1
-        ).sum()
-        
-        none = (
-            (df['apertureoverfill'] == 0) & 
-            (df['postprintspread'] == 0) & 
-            (df['poorpastetransfer'] == 0)
-        ).sum()
-        
-        print(f"All 3 mechanisms:  {all_three:6d} ({all_three/len(df)*100:5.2f}%)")
-        print(f"Any 2 mechanisms:  {any_two:6d} ({any_two/len(df)*100:5.2f}%)")
-        print(f"Exactly 1:         {exactly_one:6d} ({exactly_one/len(df)*100:5.2f}%)")
-        print(f"No mechanisms:     {none:6d} ({none/len(df)*100:5.2f}%)")
+    both = ((df['apertureoverfill'] == 1) & (df['poorpastetransfer'] == 1)).sum()
+    overfill_only = ((df['apertureoverfill'] == 1) & (df['poorpastetransfer'] == 0)).sum()
+    transfer_only = ((df['apertureoverfill'] == 0) & (df['poorpastetransfer'] == 1)).sum()
+    neither = ((df['apertureoverfill'] == 0) & (df['poorpastetransfer'] == 0)).sum()
+    
+    print(f"Both mechanisms:        {both:6d} ({both/len(df)*100:5.2f}%) [Should be 0!]")
+    print(f"Aperture overfill only: {overfill_only:6d} ({overfill_only/len(df)*100:5.2f}%)")
+    print(f"Poor transfer only:     {transfer_only:6d} ({transfer_only/len(df)*100:5.2f}%)")
+    print(f"No mechanisms:          {neither:6d} ({neither/len(df)*100:5.2f}%)")
+    
+    if both > 0:
+        print("\n⚠️  WARNING: Mutual exclusivity violated!")
+    else:
+        print("\n✓ Mutual exclusivity verified")
     
     print("="*60)
+
+
+# df = pd.read_csv("./training_data_200k_v3.csv")
+# df = label_mechanisms(df)
+# validate_mechanism_labels(df)

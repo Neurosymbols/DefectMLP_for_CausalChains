@@ -4,8 +4,7 @@ import argparse
 from app.data_prep import prepare_data_for_training, save_preprocessing_artifacts
 from app.dataset_loader import (
     create_dataloaders,
-    compute_class_weights,
-    compute_mechanism_weights
+    compute_class_weights
 )
 from app.model import create_model
 from app.train import train_model, TrainingConfig
@@ -19,20 +18,21 @@ MODEL_PATH = "./app/multitask_model/best_multitask_model.pth"
 
 def run_data_prep():
     print("Preparing data...")
-    data = prepare_data_for_training(data_source="mongodb")
-
+    data = prepare_data_for_training(data_source='mongodb')
     save_preprocessing_artifacts(
-        data["label_encoder"],
-        data["scaler"],
-        data["feature_info"],
-        PREPROCESSING_PATH
+        data['defect_encoder'],
+        data['mechanism_encoder'],
+        data['scaler'],
+        data['feature_info'],
+        "./app/multitask_model/preprocessing_artifacts.pkl"
     )
 
     print("Creating dataloaders...")
+    # Create dataloaders
     dataloaders = create_dataloaders(
-        data["X_train"], data["y_train"], data["y_mechanism_train"],
-        data["X_val"], data["y_val"], data["y_mechanism_val"],
-        data["X_test"], data["y_test"], data["y_mechanism_test"],
+        data['X_train'], data['y_train'], data['y_mechanism_train'],
+        data['X_val'], data['y_val'], data['y_mechanism_val'],
+        data['X_test'], data['y_test'], data['y_mechanism_test'],
         batch_size=256,
         num_workers=0
     )
@@ -42,11 +42,11 @@ def run_data_prep():
 
 def run_training(data, dataloaders):
     print("\nComputing weights...")
-    defect_weights = compute_class_weights(data["y_train"])
-    mechanism_weights = compute_mechanism_weights(data["y_mechanism_train"])
+    defect_weights = compute_class_weights(data['y_train'])
+    mechanism_weights = compute_class_weights(data['y_mechanism_train'])
 
     print("\nCreating model...")
-    model = create_model("multitask", input_dim=14, num_classes=3)
+    model = create_model("multitask", input_dim=14, num_defect_classes=3, num_mechanism_classes=3)
     print(model.get_architecture_summary())
 
     config = TrainingConfig()
@@ -82,8 +82,8 @@ def run_inference(dataloaders):
         preprocessing_path=PREPROCESSING_PATH
     )
 
-    print("\nRunning evaluation...")
-    evaluate_multitask_simple(model, dataloaders["test"])
+    # print("\nRunning evaluation...")
+    # evaluate_multitask_simple(model, dataloaders["test"])
 
     print("\nRunning single-board inference...")
     board = {
@@ -94,7 +94,11 @@ def run_inference(dataloaders):
         "ambient_temperature": 25
     }
 
-    result = predict(board, model, scaler, features)
+    features = prepare_features(board, scaler, features)
+    result = predict(
+        model,
+        features
+    )
     print(result)
 
 

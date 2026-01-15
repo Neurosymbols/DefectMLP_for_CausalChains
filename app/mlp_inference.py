@@ -111,9 +111,10 @@ def predict(model, features: np.ndarray, device: str = 'cpu') -> Dict:
                 'probabilities': {'No Defect': 0.95, 'Open': 0.03, 'Bridge': 0.02}
             },
             'mechanism': {
-                'present': False,
-                'probability': 0.12
-            }
+                'class': 'Poor paste transfer',
+                'confidence': 0.95,
+                'probabilities': {'No Mechanism': 0.30, 'Poor paste transfer': 0.65, 'Aperture Overfill': 0.05}
+            },
         }
     """
     # Convert to tensor
@@ -129,12 +130,13 @@ def predict(model, features: np.ndarray, device: str = 'cpu') -> Dict:
         defect_conf = defect_probs[defect_pred].item()
         
         # Mechanism predictions
-        mechanism_prob = torch.sigmoid(mechanism_logits)[0].item()
-        mechanism_present = mechanism_prob > 0.5
+        mech_probs = torch.softmax(mechanism_logits, dim=1)[0]
+        mech_pred = torch.argmax(mech_probs).item()
+        mech_conf = mech_probs[mech_pred].item()
     
     # Format results
     defect_classes = ['No Defect', 'Open Circuit', 'Solder Bridging']
-    mechanism_name = 'poorpastetransfer'
+    mechanism_classes = ['Aperture Overfill', 'No Mechanism', 'Poor paste transfer']
     
     result = {
         'defect': {
@@ -149,13 +151,17 @@ def predict(model, features: np.ndarray, device: str = 'cpu') -> Dict:
             'description': get_defect_description(defect_pred)
         },
         'mechanism': {
-            'present': bool(mechanism_present),
-            'probability': float(mechanism_prob),
-            'name': mechanism_name,
-            'confidence': float(mechanism_prob if mechanism_present else 1 - mechanism_prob),
+            'class': mechanism_classes[mech_pred],
+            'label': mech_pred,
+            'confidence': float(mech_conf),
+            'probabilities': {
+                mechanism_classes[i]: float(mech_probs[i])
+                for i in range(3)
+            },
             'source': 'MLP',
-            'description': get_mechanism_description(mechanism_present, mechanism_prob)
+            'description': get_mechanism_description(mech_pred)
         }
     }
-    
+    print(get_mechanism_description(mech_pred))
+    print(mech_pred)
     return result

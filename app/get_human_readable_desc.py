@@ -7,14 +7,14 @@ def get_defect_description(defect_label: int) -> str:
     }
     return descriptions.get(defect_label, "Unknown defect")
 
-def get_mechanism_description(present: bool, probability: float) -> str:
+def get_mechanism_description(mech_label:int) -> str:
     """Get human-readable mechanism description"""
-    if present:
-        return (f"Poor paste transfer detected ({probability*100:.1f}% probability) - "
-                f"insufficient paste transfer from stencil to board pads")
-    else:
-        return (f"No mechanism detected ({(1-probability)*100:.1f}% confidence) - "
-                f"paste transfer appears normal")
+    descriptions = {
+        0: "Aperture overfill observed, indicating excess solder paste deposited during printing.",
+        1: "No mechanism-related issues detected; the board meets process and quality requirements.",
+        2: "Poor paste transfer identified, suggesting incomplete or inconsistent solder paste release from the stencil."
+    }
+    return descriptions.get(mech_label, "Unknown mechanism")
 
 def get_violation_description(violation_list: list, high_risk_list: list) -> str:
     """Get human-readable violation description"""

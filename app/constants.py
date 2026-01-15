@@ -36,6 +36,14 @@ PARAMETER_SPECS = {
     }
 }
 
+parameter_column_map = {
+    'paste_volume': 'Paste volume per aperture',
+    'stencil_thickness': 'Stencil thickness',
+    'paste_viscosity': 'Paste viscosity',
+    'ambient_rh': 'Ambient RH',
+    'ambient_temperature': 'Ambient temperature'
+}
+
 # model constants
 HIDDEN_DIMS = [256, 128, 64]
 DROPOUT_RATE = 0.3
@@ -44,7 +52,7 @@ USE_BATCHNORM = True
 # data prep constants
 MONGO_URI = 'mongodb://localhost:27017/'
 DB = 'pcb_manufacturing'
-COL = 'synthetic_boards'
+COL = 'synthetic_boards_v2'
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15

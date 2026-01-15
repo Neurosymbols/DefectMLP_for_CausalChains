@@ -34,14 +34,14 @@ class PCBDefectDataset(Dataset):
         """
         Args:
             X: Feature array (n_samples, n_features)
-            y: Label array (n_samples,)
-            y_mechanism: Mechanism label array (n_samples,) - binary 0/1
+            y_defect: Label array (n_samples,)
+            y_mechanism: Mechanism label array (n_samples,) - multi-class 0/1/2
             transform: Optional transform to apply to features
         """
         # Convert to float32 (PyTorch default)
         self.X = torch.from_numpy(X).float()
-        self.y_defect = torch.from_numpy(y_defect).long()  # long for classification
-        self.y_mechanism = torch.from_numpy(y_mechanism).float()  # float for binary classification
+        self.y_defect = torch.from_numpy(y_defect).long()      # long for multi-class
+        self.y_mechanism = torch.from_numpy(y_mechanism).long() # float for binary classification
         # self.transform = transform
         
         assert len(self.X) == len(self.y_defect) == len(self.y_mechanism), \
@@ -72,18 +72,13 @@ class PCBDefectDataset(Dataset):
         
         return features, defect_label, mechanism_label
     
-    def get_class_distribution(self) -> Dict[int, int]:
+    def get_defect_distribution(self) -> Dict[int, int]:
         """Get count of samples per class (defect)"""
         return dict(Counter(self.y_defect.numpy()))
     
-    def get_mechanism_distribution(self) -> Dict[str, int]:
-        """Get count of mechanism labels"""
-        y_mech_np = self.y_mechanism.numpy()
-        return {
-            'negative': int((y_mech_np == 0).sum()),
-            'positive': int((y_mech_np == 1).sum()),
-            'rate': float(y_mech_np.mean())
-        }
+    def get_mechanism_distribution(self) -> Dict[int, int]:
+        """Get count of samples per mechanism class"""
+        return dict(Counter(self.y_mechanism.numpy()))
 
 # ============================================================================
 # CLASS WEIGHTS CALCULATION
@@ -146,54 +141,6 @@ def compute_class_weights(y_train: np.ndarray,
     print(f"\nTotal weighted samples: {total_weight:.2f} (should ≈ {n_samples})")
     
     return weights_tensor
-
-def compute_mechanism_weights(y_mechanism_train: np.ndarray) -> torch.Tensor:
-    """
-    Compute pos_weight for binary mechanism classification
-    
-    We use pos_weight
-    to handle class imbalance:
-    
-    pos_weight = (# negative samples) / (# positive samples)
-    
-    This tells the loss to weight positive samples more heavily.
-    
-    Args:
-        y_mechanism_train: Binary mechanism labels (0 or 1)
-    
-    Returns:
-        Tensor with pos_weight value
-    
-    Example:
-        y = [0, 0, 0, 0, 0, 0, 0, 0, 0, 1]  # 90% negative, 10% positive
-        pos_weight = 9.0  (weight positive class 9x more)
-    """
-    # Count positive and negative samples
-    n_positive = (y_mechanism_train == 1).sum()
-    n_negative = (y_mechanism_train == 0).sum()
-    n_total = len(y_mechanism_train)
-    
-    # Calculate pos_weight
-    if n_positive > 0:
-        pos_weight = n_negative / n_positive
-    else:
-        pos_weight = 1.0  # No positive samples, use neutral weight
-    
-    # Convert to tensor
-    pos_weight_tensor = torch.tensor([pos_weight], dtype=torch.float32)
-    
-    # Print info
-    print("\n" + "="*60)
-    print("MECHANISM CLASS WEIGHTS")
-    print("="*60)
-    print(f"Total samples:    {n_total}")
-    print(f"Negative (0):     {n_negative:6d} ({n_negative/n_total*100:5.2f}%)")
-    print(f"Positive (1):     {n_positive:6d} ({n_positive/n_total*100:5.2f}%)")
-    print(f"pos_weight:       {pos_weight:6.2f}")
-    print("\nInterpretation:")
-    print(f"  Loss will weight positive samples {pos_weight:.1f}x more than negative")
-    
-    return pos_weight_tensor
 
 # ============================================================================
 # DATALOADER CREATION
@@ -277,10 +224,15 @@ def create_dataloaders(X_train: np.ndarray,
     print(f"  Num batches:  {len(test_loader)}")
     
     # Print class distribution
-    print(f"\nClass distribution:")
-    print(f"  Train: {train_dataset.get_class_distribution()}")
-    print(f"  Val:   {val_dataset.get_class_distribution()}")
-    print(f"  Test:  {test_dataset.get_class_distribution()}")
+    print(f"\nDefect distribution:")
+    print(f"  Train: {train_dataset.get_defect_distribution()}")
+    print(f"  Val:   {val_dataset.get_defect_distribution()}")
+    print(f"  Test:  {test_dataset.get_defect_distribution()}")
+    
+    print(f"\nMechanism distribution:")
+    print(f"  Train: {train_dataset.get_mechanism_distribution()}")
+    print(f"  Val:   {val_dataset.get_mechanism_distribution()}")
+    print(f"  Test:  {test_dataset.get_mechanism_distribution()}")
     
     return {
         'train': train_loader,

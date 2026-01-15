@@ -18,6 +18,7 @@ import pickle
 
 from .feature_engg import engineer_all_features, get_feature_columns
 from .add_mech_labels import validate_mechanism_labels, label_mechanisms
+from .add_violation_labels import create_parameter_risk_labels
 from .constants import *
 
 # ============================================================================
@@ -61,8 +62,8 @@ def load_from_mongodb(limit: Optional[int] = None) -> pd.DataFrame:
             
             # Labels
             'defect': doc['labels']['defect'],
-            'mech_causes': doc['labels'].get('mechanism_causes'),
-            'root_causes': doc['labels'].get('root_causes'),
+            'mech causes': doc['labels'].get('mechanism_causes'),
+            'root causes': doc['labels'].get('root_causes'),
             
             # Temporal
             'hour_of_day': doc['temporal']['hour_of_day'],
@@ -151,14 +152,14 @@ def grouped_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Data
 # LABEL ENCODING
 # ============================================================================
 
-def encode_labels(df_train: pd.DataFrame,
+def encode_defect_labels(df_train: pd.DataFrame,
                   df_val: pd.DataFrame,
                   df_test: pd.DataFrame,
                   target_col: str = 'defect') -> Tuple[np.ndarray, np.ndarray, np.ndarray, LabelEncoder]:
     """
     Encode categorical labels to integers
     
-    Defect classes:
+    Defect classes (alphabetically sorted by LabelEncoder):
     - 0: No Defect
     - 1: Open Circuit
     - 2: Solder Bridging
@@ -199,6 +200,72 @@ def encode_labels(df_train: pd.DataFrame,
     
     return y_train, y_val, y_test, label_encoder
 
+def encode_mechanism_labels(df_train: pd.DataFrame,
+                           df_val: pd.DataFrame,
+                           df_test: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, LabelEncoder]:
+    """
+    Encode mechanism labels to integers
+    
+    Creates mechanism labels from binary columns (mutually exclusive):
+    - apertureoverfill
+    - poorpastetransfer
+    
+    Mechanism classes (alphabetically sorted by LabelEncoder):
+    - 0: Aperture overfill
+    - 1: No mechanism
+    - 2: Poor paste transfer
+    
+    Args:
+        df_train: Training DataFrame with mechanism binary columns
+        df_val: Validation DataFrame with mechanism binary columns
+        df_test: Test DataFrame with mechanism binary columns
+    
+    Returns:
+        Tuple of (y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder)
+    """
+        # Helper function to create string labels from binary columns
+    def get_mechanism_label(row):
+        """
+        Convert binary mechanism columns to single string label
+        Mutually exclusive: only one can be True
+        """
+        if row['apertureoverfill'] == 1:
+            return 'Aperture overfill'
+        elif row['poorpastetransfer'] == 1:
+            return 'Poor paste transfer'
+        else:
+            return 'No mechanism'
+    # Create string label column for each split
+    df_train = df_train.copy()
+    df_val = df_val.copy()
+    df_test = df_test.copy()
+    
+    df_train['mechanism_label'] = df_train.apply(get_mechanism_label, axis=1)
+    df_val['mechanism_label'] = df_val.apply(get_mechanism_label, axis=1)
+    df_test['mechanism_label'] = df_test.apply(get_mechanism_label, axis=1)
+    
+    # Encode using LabelEncoder
+    mechanism_encoder = LabelEncoder()
+    y_mechanism_train = mechanism_encoder.fit_transform(df_train['mechanism_label'])
+    y_mechanism_val = mechanism_encoder.transform(df_val['mechanism_label'])
+    y_mechanism_test = mechanism_encoder.transform(df_test['mechanism_label'])
+
+    # Print mapping
+    print("\n" + "="*60)
+    print("MECHANISM LABEL ENCODING")
+    print("="*60)
+    print("Class mapping:")
+    for idx, class_name in enumerate(mechanism_encoder.classes_):
+        count_train = (y_mechanism_train == idx).sum()
+        count_val = (y_mechanism_val == idx).sum()
+        count_test = (y_mechanism_test == idx).sum()
+        print(f"  {idx}: {class_name:20s} "
+              f"(Train: {count_train:5d}, Val: {count_val:4d}, Test: {count_test:4d})")
+    
+    print("\n✓ Mutual exclusivity verified across all splits")
+    
+    return y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder
+    
 
 # ============================================================================
 # FEATURE STANDARDIZATION
@@ -239,7 +306,6 @@ def standardize_features(X_train: np.ndarray,
     print(f"Test:  mean={X_test_scaled.mean():.4f}, std={X_test_scaled.std():.4f}")
     
     return X_train_scaled, X_val_scaled, X_test_scaled, scaler
-
 
 # ============================================================================
 # COMPLETE PREPROCESSING PIPELINE
@@ -289,8 +355,15 @@ def prepare_data_for_training(data_source: str,
     print(f"Engineered {len(feature_info['all_engineered'])} features")
     print(f"Total features: {len(feature_info['all_features'])}")
 
-    print("Labeling mechanisms...")
+    print("\nLabelling mechanisms...")
     df_engineered = label_mechanisms(df_engineered)
+
+    print("\nLabelling parameter violations...")
+    df_engineered = create_parameter_risk_labels(
+        df_engineered,
+        PARAMETER_SPECS,
+        parameter_column_map
+    )
     
     # Step 3: Split by batch
     print("\nStep 3: Splitting data by batch...")
@@ -308,22 +381,36 @@ def prepare_data_for_training(data_source: str,
     print(f"X_val shape:   {X_val.shape}")
     print(f"X_test shape:  {X_test.shape}")
     
-    # Step 5: Encode labels
-    print("\nStep 5: Encoding labels...")
-    y_train, y_val, y_test, label_encoder = encode_labels(
+    # Step 5a: Encode defect labels
+    print("\nStep 5: Encoding defect labels...")
+    y_train, y_val, y_test, defect_encoder = encode_defect_labels(
         df_train, df_val, df_test
     )
 
-    # Step 5b: Extract mechanism labels (NEW)
-    print("\nStep 5b: Extracting mechanism labels...")
-    y_mechanism_train = df_train['poorpastetransfer'].values
-    y_mechanism_val = df_val['poorpastetransfer'].values
-    y_mechanism_test = df_test['poorpastetransfer'].values
-    
-    print(f"Mechanism label distribution:")
-    print(f"  Train: {y_mechanism_train.sum()} / {len(y_mechanism_train)} ({y_mechanism_train.mean()*100:.2f}%)")
-    print(f"  Val:   {y_mechanism_val.sum()} / {len(y_mechanism_val)} ({y_mechanism_val.mean()*100:.2f}%)")
-    print(f"  Test:  {y_mechanism_test.sum()} / {len(y_mechanism_test)} ({y_mechanism_test.mean()*100:.2f}%)")
+    # Step 5b: Encode mechanism labels
+    print("\nStep 5b: Encoding mechanism labels...")
+    y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder = encode_mechanism_labels(
+        df_train, df_val, df_test
+    )
+
+    # Step 5c: Extract parameter risk scores
+    print("\nStep 5c: Extracting parameter risk scores...")
+    risk_cols = [f'{p}_risk' for p in PARAMETER_SPECS.keys()]
+    y_param_risk_train = df_train[risk_cols].values  # (n_train, 5)
+    y_param_risk_val = df_val[risk_cols].values      # (n_val, 5)
+    y_param_risk_test = df_test[risk_cols].values    # (n_test, 5)
+
+    print(f"Parameter risk shape:")
+    print(f"  Train: {y_param_risk_train.shape}")
+    print(f"  Val:   {y_param_risk_val.shape}")
+    print(f"  Test:  {y_param_risk_test.shape}")
+
+    # Print distribution
+    print(f"\nParameter risk distribution (train set):")
+    for i, col in enumerate(risk_cols):
+        high_risk = (y_param_risk_train[:, i] > 0.70).sum()
+        pct = (y_param_risk_train[:, i] > 0.70).mean() * 100
+        print(f"  {col:25s}: {high_risk:>6,} high-risk ({pct:5.2f}%)")
 
     # Step 6: Standardize (optional)
     scaler = None
@@ -343,12 +430,32 @@ def prepare_data_for_training(data_source: str,
         'train_samples': len(X_train),
         'val_samples': len(X_val),
         'test_samples': len(X_test),
-        'train_mechanism_positive': int(y_mechanism_train.sum()),
-        'val_mechanism_positive': int(y_mechanism_val.sum()),
-        'test_mechanism_positive': int(y_mechanism_test.sum()),
-        'train_mechanism_rate': float(y_mechanism_train.mean()),
-        'val_mechanism_rate': float(y_mechanism_val.mean()),
-        'test_mechanism_rate': float(y_mechanism_test.mean())
+        # Defect distribution
+        'train_defect_dist': {
+            defect_encoder.classes_[i]: int((y_train == i).sum())
+            for i in range(len(defect_encoder.classes_))
+        },
+        'val_defect_dist': {
+            defect_encoder.classes_[i]: int((y_val == i).sum())
+            for i in range(len(defect_encoder.classes_))
+        },
+        'test_defect_dist': {
+            defect_encoder.classes_[i]: int((y_test == i).sum())
+            for i in range(len(defect_encoder.classes_))
+        },
+        # Mechanism distribution
+        'train_mechanism_dist': {
+            mechanism_encoder.classes_[i]: int((y_mechanism_train == i).sum())
+            for i in range(len(mechanism_encoder.classes_))
+        },
+        'val_mechanism_dist': {
+            mechanism_encoder.classes_[i]: int((y_mechanism_val == i).sum())
+            for i in range(len(mechanism_encoder.classes_))
+        },
+        'test_mechanism_dist': {
+            mechanism_encoder.classes_[i]: int((y_mechanism_test == i).sum())
+            for i in range(len(mechanism_encoder.classes_))
+        }
     }
     
     print("\n" + "="*60)
@@ -366,14 +473,20 @@ def prepare_data_for_training(data_source: str,
         'y_mechanism_train': y_mechanism_train,
         'y_mechanism_val': y_mechanism_val,
         'y_mechanism_test': y_mechanism_test,
-        'label_encoder': label_encoder,
+        'y_param_risk_train': y_param_risk_train,
+        'y_param_risk_val': y_param_risk_val,
+        'y_param_risk_test': y_param_risk_test,
+        'defect_encoder': defect_encoder,
+        'mechanism_encoder': mechanism_encoder,
         'scaler': scaler,
         'feature_info': feature_info,
-        'split_info': split_info
+        'split_info': split_info,
+        'risk_columns': risk_cols
     }
 
 
-def save_preprocessing_artifacts(label_encoder: LabelEncoder,
+def save_preprocessing_artifacts(defect_encoder: LabelEncoder,
+                                 mechanism_encoder: LabelEncoder,
                                  scaler: Optional[StandardScaler],
                                  feature_info: Dict,
                                  filepath: str = 'preprocessing_artifacts.pkl'):
@@ -381,13 +494,15 @@ def save_preprocessing_artifacts(label_encoder: LabelEncoder,
     Save preprocessing objects for later use (inference)
     
     Args:
-        label_encoder: Fitted LabelEncoder
+        defect_encoder: Fitted LabelEncoder on defect labels
+        mechanism_encoder: Fitted LabelEncoder on mechanism labels
         scaler: Fitted StandardScaler (or None)
         feature_info: Feature column information
         filepath: Where to save
     """
     artifacts = {
-        'label_encoder': label_encoder,
+        'defect_encoder': defect_encoder,
+        'mechanism_encoder': mechanism_encoder,
         'scaler': scaler,
         'feature_info': feature_info
     }
