@@ -211,7 +211,10 @@ def evaluate_multitask_simple(model: nn.Module,
     
     return {
         'predictions': predictions,
-        'overall_metrics': metrics
+        'overall_metrics': metrics,
+        'calibration_metrics': cb_metrics,
+        'mechansim_confusion_matrix': mechanism_cm,
+        'defect_confusion_matrix': defect_cm
     }
 
 # ============================================================================

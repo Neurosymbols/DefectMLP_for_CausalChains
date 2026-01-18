@@ -12,10 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional
-
-HIDDEN_DIMS = [256, 128, 64]
-DROPOUT_RATE = 0.3
-USE_BATCHNORM = True
+from .constants import *
 
 # ============================================================================
 # MAIN MODEL: ENGINEERED FEATURES MLP
@@ -220,21 +217,21 @@ class DefectAndMechanismMLP(nn.Module):
     def __init__(self,
                  input_dim: int = 18,
                  num_defect_classes: int = 3,
-                 num_mechanisms: int = 1):  # Only poorpastetransfer
+                 num_mechanism_classes: int = 3):
         """
         Initialize Multi-Task MLP
         
         Args:
             input_dim: Number of input features (default: 18)
             num_defect_classes: Number of defect classes (default: 3)
-            num_mechanisms: Number of mechanisms to predict (default: 1)
+            num_mechanism_classes: Number of mechanisms to predict (default: 3)
         """
         super(DefectAndMechanismMLP, self).__init__()
         
         self.input_dim = input_dim
         self.hidden_dims = HIDDEN_DIMS
         self.num_defect_classes = num_defect_classes
-        self.num_mechanisms = num_mechanisms
+        self.num_mechanism_classes = num_mechanism_classes
         self.dropout_rate = DROPOUT_RATE
         self.use_batchnorm = USE_BATCHNORM
         
@@ -273,7 +270,7 @@ class DefectAndMechanismMLP(nn.Module):
         self.defect_head = nn.Linear(self.hidden_dims[2], self.num_defect_classes)
         
         # Mechanism prediction head (binary)
-        self.mechanism_head = nn.Linear(self.hidden_dims[2], self.num_mechanisms)
+        self.mechanism_head = nn.Linear(self.hidden_dims[2], self.num_mechanism_classes)
     
     def _initialize_weights(self):
         """Initialize weights using Kaiming initialization"""
@@ -323,7 +320,7 @@ class DefectAndMechanismMLP(nn.Module):
         
         # Task-specific heads
         defect_logits = self.defect_head(x)       # (batch, 3)
-        mechanism_logits = self.mechanism_head(x)  # (batch, 1)
+        mechanism_logits = self.mechanism_head(x)  # (batch, 3)
         
         return defect_logits, mechanism_logits
     
@@ -345,12 +342,11 @@ class DefectAndMechanismMLP(nn.Module):
         defect_probs = F.softmax(defect_logits, dim=1)
         
         # Mechanism: binary (use sigmoid)
-        mechanism_probs = torch.sigmoid(mechanism_logits)
+        mechanism_probs = F.softmax(mechanism_logits, dim=1)
         
         return defect_probs, mechanism_probs
     
-    def predict(self, x: torch.Tensor, 
-                mechanism_threshold: float = 0.5) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get predictions for both tasks (for inference)
         
@@ -369,7 +365,7 @@ class DefectAndMechanismMLP(nn.Module):
         defect_preds = torch.argmax(defect_probs, dim=1)
         
         # Mechanism: threshold for binary
-        mechanism_preds = (mechanism_probs > mechanism_threshold).float().squeeze()
+        mechanism_preds = torch.argmax(mechanism_probs, dim=1)
         
         return defect_preds, mechanism_preds
     
@@ -407,7 +403,7 @@ class DefectAndMechanismMLP(nn.Module):
             summary.append(f"  Layer {i}: {dim} units")
         summary.append(f"\nTask-Specific Heads:")
         summary.append(f"  Defect:    {self.num_defect_classes} classes (multi-class)")
-        summary.append(f"  Mechanism: {self.num_mechanisms} mechanism (binary)")
+        summary.append(f"  Mechanism: {self.num_mechanism_classes} mechanism (binary)")
         summary.append(f"\nConfiguration:")
         summary.append(f"  Dropout rate: {self.dropout_rate}")
         summary.append(f"  BatchNorm: {self.use_batchnorm}")
@@ -425,7 +421,8 @@ class DefectAndMechanismMLP(nn.Module):
 
 def create_model(model_type: str = 'engineered',
                  input_dim: Optional[int] = None,
-                 num_classes: int = 3,
+                 num_defect_classes: int = 3,
+                 num_mechanism_classes: int = 3,
                  **kwargs) -> nn.Module:
     """
     Factory function to create models
@@ -443,7 +440,7 @@ def create_model(model_type: str = 'engineered',
         input_dim = input_dim or 18  # 5 raw + 13 engineered
         model = EngineeredFeaturesMLP(
             input_dim=input_dim,
-            num_classes=num_classes,
+            num_classes=num_defect_classes,
             **kwargs
         )
     elif model_type == 'multitask':
@@ -451,8 +448,8 @@ def create_model(model_type: str = 'engineered',
         input_dim = input_dim or 18  # 5 raw + 13 engineered
         model = DefectAndMechanismMLP(
             input_dim=input_dim,
-            num_defect_classes=num_classes,
-            num_mechanisms=1,  # Only poorpastetransfer for now
+            num_defect_classes=num_defect_classes,
+            num_mechanism_classes=num_mechanism_classes,
             **kwargs
         )
     else:

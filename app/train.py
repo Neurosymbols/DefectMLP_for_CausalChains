@@ -192,19 +192,21 @@ def multitask_loss(defect_logits: torch.Tensor,
                    defect_targets: torch.Tensor,
                    mechanism_targets: torch.Tensor,
                    defect_weights: torch.Tensor,
-                   mechanism_pos_weight: torch.Tensor,
+                   mechanism_weights: torch.Tensor,  # CHANGED: class weights instead of pos_weight
                    task_weights: dict = {'defect': 1.0, 'mechanism': 0.5},
                    device: str = 'cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Combined loss for defect + mechanism prediction
     
+    BOTH tasks are now multi-class classification (3 classes each)
+    
     Args:
         defect_logits: (batch, 3) - raw scores for defect classes
-        mechanism_logits: (batch, 1) - raw scores for mechanism
+        mechanism_logits: (batch, 3) - raw scores for mechanism classes (CHANGED)
         defect_targets: (batch,) - defect class indices 0/1/2
-        mechanism_targets: (batch,) - mechanism binary labels 0/1
+        mechanism_targets: (batch,) - mechanism class indices 0/1/2 (CHANGED)
         defect_weights: (3,) - class weights for defect loss
-        mechanism_pos_weight: (1,) - pos_weight for mechanism loss
+        mechanism_weights: (3,) - class weights for mechanism loss (CHANGED)
         task_weights: dict - relative importance of each task
         device: device to run on
     
@@ -218,13 +220,11 @@ def multitask_loss(defect_logits: torch.Tensor,
         weight=defect_weights.to(device)
     )
 
-    # Mechanism loss (binary classification)
-    mechanism_targets_expanded = mechanism_targets.unsqueeze(1)  # (batch,) -> (batch, 1)
-    
-    mechanism_loss = nn.functional.binary_cross_entropy_with_logits(
+    # Mechanism loss (CHANGED: multi-class, not binary)
+    mechanism_loss = nn.functional.cross_entropy(
         mechanism_logits,
-        mechanism_targets_expanded,
-        pos_weight=mechanism_pos_weight.to(device)
+        mechanism_targets,
+        weight=mechanism_weights.to(device)
     )
     
     # Combined loss (weighted sum)
@@ -242,7 +242,7 @@ def train_one_epoch(
         train_loader: DataLoader,
         optimizer: optim.Optimizer,
         defect_weights: torch.Tensor,
-        mechanism_pos_weight: torch.Tensor,
+        mechanism_weights: torch.Tensor,  # CHANGED
         task_weights: dict,
         device: str,
         epoch: int,
@@ -256,7 +256,7 @@ def train_one_epoch(
         train_loader: Training DataLoader
         optimizer: Optimizer
         defect_weights: Class weights for defect loss
-        mechanism_pos_weight: Positive class weight for mechanism
+        mechanism_weights: Class weights for mechanism loss (CHANGED)
         task_weights: Task importance weights
         device: Device to train on
         epoch: Current epoch number
@@ -275,7 +275,7 @@ def train_one_epoch(
     
     all_defect_outputs = []
     all_defect_targets = []
-    all_mechanism_preds = []
+    all_mechanism_outputs = []
     all_mechanism_targets = []
     
     start_time = time.time()
@@ -297,7 +297,7 @@ def train_one_epoch(
         total_loss, defect_loss, mechanism_loss = multitask_loss(
             defect_logits, mechanism_logits,
             defect_targets, mechanism_targets,
-            defect_weights, mechanism_pos_weight,
+            defect_weights, mechanism_weights,
             task_weights, device
         )
         
@@ -317,14 +317,11 @@ def train_one_epoch(
         running_mechanism_loss += mechanism_loss.item() * batch_size
         total_samples += batch_size
 
-        # Get predictions
-        mechanism_preds = (torch.sigmoid(mechanism_logits) > 0.5).float().squeeze()
-
         # Store for metrics calculation
         all_defect_outputs.append(defect_logits.detach())
         all_defect_targets.append(defect_targets.detach())
-        all_mechanism_preds.append(mechanism_preds.detach().cpu().numpy())
-        all_mechanism_targets.append(mechanism_targets.detach().cpu().numpy())
+        all_mechanism_outputs.append(mechanism_logits.detach())
+        all_mechanism_targets.append(mechanism_targets.detach())
         
         # Print progress
         if (batch_idx + 1) % print_every == 0:
@@ -348,14 +345,12 @@ def train_one_epoch(
     defect_acc = (defect_preds == all_defect_targets).float().mean().item()
 
     # Mechanism metrics
-    all_mechanism_preds = np.concatenate(all_mechanism_preds)
-    all_mechanism_targets = np.concatenate(all_mechanism_targets)
+    all_mechanism_outputs = torch.cat(all_mechanism_outputs)
+    all_mechanism_targets = torch.cat(all_mechanism_targets)
+    mechanism_f1 = calculate_f1_score(all_mechanism_outputs, all_mechanism_targets)
     
-    mechanism_acc = (all_mechanism_preds == all_mechanism_targets).mean()
-
-    # Mechanism F1
-    from sklearn.metrics import f1_score
-    mechanism_f1 = f1_score(all_mechanism_targets, all_mechanism_preds, zero_division=0)
+    mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
+    mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
     
     elapsed_time = time.time() - start_time
     
@@ -380,7 +375,7 @@ def train_one_epoch(
 def validate(model: nn.Module,
             val_loader: DataLoader,
             defect_weights: torch.Tensor,
-            mechanism_pos_weight: torch.Tensor,
+            mechanism_weights: torch.Tensor,
             task_weights: dict,
             device: str) -> Dict[str, float]:
     """
@@ -390,7 +385,7 @@ def validate(model: nn.Module,
         model: Multi-task model
         val_loader: Validation DataLoader
         defect_weights: Class weights for defect loss
-        mechanism_pos_weight: Positive class weight for mechanism
+        mechanism_weights: Class weights for mechanism loss (CHANGED)
         task_weights: Task importance weights
         device: Device
     
@@ -406,7 +401,7 @@ def validate(model: nn.Module,
     
     all_defect_outputs = []
     all_defect_targets = []
-    all_mechanism_preds = []
+    all_mechanism_outputs = []
     all_mechanism_targets = []
     
     with torch.no_grad():
@@ -423,7 +418,7 @@ def validate(model: nn.Module,
             total_loss, defect_loss, mechanism_loss = multitask_loss(
                 defect_logits, mechanism_logits,
                 defect_targets, mechanism_targets,
-                defect_weights, mechanism_pos_weight,
+                defect_weights, mechanism_weights,
                 task_weights, device
             )
             
@@ -434,14 +429,11 @@ def validate(model: nn.Module,
             running_mechanism_loss += mechanism_loss.item() * batch_size
             total_samples += batch_size
 
-            # Get predictions
-            mechanism_preds = (torch.sigmoid(mechanism_logits) > 0.5).float().squeeze()
-            
             # Store for metrics
             all_defect_outputs.append(defect_logits)
             all_defect_targets.append(defect_targets)
-            all_mechanism_preds.append(mechanism_preds.cpu().numpy())
-            all_mechanism_targets.append(mechanism_targets.cpu().numpy())
+            all_mechanism_outputs.append(mechanism_logits)
+            all_mechanism_targets.append(mechanism_targets)
     
     # Calculate metrics
     val_total_loss = running_total_loss / total_samples
@@ -457,13 +449,12 @@ def validate(model: nn.Module,
     defect_acc = (defect_preds == all_defect_targets).float().mean().item()
     
     # Mechanism metrics
-    all_mechanism_preds = np.concatenate(all_mechanism_preds)
-    all_mechanism_targets = np.concatenate(all_mechanism_targets)
+    all_mechanism_outputs = torch.cat(all_mechanism_outputs)
+    all_mechanism_targets = torch.cat(all_mechanism_targets)
+    mechanism_f1 = calculate_f1_score(all_mechanism_outputs, all_mechanism_targets)
     
-    mechanism_acc = (all_mechanism_preds == all_mechanism_targets).mean()
-    
-    from sklearn.metrics import f1_score
-    mechanism_f1 = f1_score(all_mechanism_targets, all_mechanism_preds, zero_division=0)
+    mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
+    mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
     
     metrics = {
         'total_loss': val_total_loss,
@@ -543,7 +534,7 @@ class EarlyStopping:
 def train_model(model: nn.Module,
                dataloaders: Dict[str, DataLoader],
                defect_weights: Optional[torch.Tensor] = None,
-               mechanism_pos_weight: Optional[torch.Tensor] = None,
+               mechanism_weights: Optional[torch.Tensor] = None,
                config: Optional[TrainingConfig] = None,
                task_weights: dict = {'defect': 1.0, 'mechanism': 0.5},
                save_path: str = 'best_model.pth') -> Tuple[nn.Module, Dict]:
@@ -553,8 +544,8 @@ def train_model(model: nn.Module,
     Args:
         model: Multi-task model to train
         dataloaders: Dict with 'train' and 'val' DataLoaders
-        defect_weights: Class weights for defect loss
-        mechanism_pos_weight: Positive class weight for mechanism
+        defect_weights: Class weights for defect loss (3 classes)
+        mechanism_weights: Class weights for mechanism loss (3 classes) (CHANGED)
         config: Training configuration
         task_weights: Relative importance of each task
         save_path: Path to save best model
@@ -588,12 +579,12 @@ def train_model(model: nn.Module,
         defect_weights = torch.ones(3).to(device)
         print(f"\nNo defect weights (uniform)")
     
-    if mechanism_pos_weight is not None:
-        mechanism_pos_weight = mechanism_pos_weight.to(device)
-        print(f"Mechanism pos_weight: {mechanism_pos_weight.cpu().numpy()}")
+    if mechanism_weights is not None:
+        mechanism_weights = mechanism_weights.to(device)
+        print(f"Mechanism class weights: {mechanism_weights.cpu().numpy()}")
     else:
-        mechanism_pos_weight = torch.ones(1).to(device)
-        print(f"No mechanism weight (uniform)")
+        mechanism_weights = torch.ones(3).to(device)
+        print(f"No mechanism weights (uniform)")
     
     print(f"\nTask weights: defect={task_weights['defect']}, mechanism={task_weights['mechanism']}")
     
@@ -659,7 +650,7 @@ def train_model(model: nn.Module,
             dataloaders['train'],
             optimizer,
             defect_weights,
-            mechanism_pos_weight,
+            mechanism_weights,
             task_weights,
             device,
             epoch,
@@ -678,7 +669,7 @@ def train_model(model: nn.Module,
             model,
             dataloaders['val'],
             defect_weights,
-            mechanism_pos_weight,
+            mechanism_weights,
             task_weights,
             device
         )
