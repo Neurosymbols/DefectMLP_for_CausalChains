@@ -416,6 +416,250 @@ class DefectAndMechanismMLP(nn.Module):
         return "\n".join(summary)
 
 # ============================================================================
+# MULTI-TASK MODEL: DEFECT + MECHANISM + PARAMETER RISK PREDICTION
+# ============================================================================
+
+class DefectMechanismParameterMLP(nn.Module):
+    """
+    Multi-Task MLP for complete causal chain prediction
+    
+    Architecture:
+        Input (18)
+        ↓ [SHARED ENCODER]
+        → Dense(256) + BatchNorm + ReLU + Dropout(0.3)
+        → Dense(128) + BatchNorm + ReLU + Dropout(0.3)
+        → Dense(64) + BatchNorm + ReLU + Dropout(0.2)
+        ↓ [TASK-SPECIFIC HEADS]
+        ├→ Defect Head: Dense(3) → [No Defect, Open Circuit, Solder Bridging]
+        ├→ Mechanism Head: Dense(3) → [No mechanism, Poor paste transfer, Aperture overfill]
+        └→ Parameter Risk Head: Dense(5) → [paste_vol_risk, stencil_risk, viscosity_risk, rh_risk, temp_risk]
+    
+    Three tasks: 2 classification + 1 regression
+    
+    Parameters: ~47,000 (shared) + ~600 (heads) = ~47,600
+    """
+    def __init__(self,
+                input_dim: int = 18,
+                num_defect_classes: int = 3,
+                num_mechanism_classes: int = 3,
+                num_parameters: int = 5):
+        """
+        Initialize Multi-Task MLP
+        
+        Args:
+            input_dim: Number of input features (default: 18)
+            num_defect_classes: Number of defect classes (default: 3)
+            num_mechanism_classes: Number of mechanism classes (default: 3)
+            num_parameters: Number of parameters to predict risk for (default: 5)
+        """
+        super(DefectMechanismParameterMLP, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dims = HIDDEN_DIMS
+        self.num_defect_classes = num_defect_classes
+        self.num_mechanism_classes = num_mechanism_classes
+        self.num_parameters = num_parameters  # NEW
+        self.dropout_rate = DROPOUT_RATE
+        self.use_batchnorm = USE_BATCHNORM
+        
+        # Build layers
+        self._build_shared_encoder()
+        self._build_task_heads()
+        
+        # Initialize weights
+        self._initialize_weights()
+
+    def _build_shared_encoder(self):
+        """Build shared encoder layers"""
+        
+        # Layer 1: Input → Hidden1
+        self.fc1 = nn.Linear(self.input_dim, self.hidden_dims[0])
+        if self.use_batchnorm:
+            self.bn1 = nn.BatchNorm1d(self.hidden_dims[0])
+        self.dropout1 = nn.Dropout(self.dropout_rate)
+        
+        # Layer 2: Hidden1 → Hidden2
+        self.fc2 = nn.Linear(self.hidden_dims[0], self.hidden_dims[1])
+        if self.use_batchnorm:
+            self.bn2 = nn.BatchNorm1d(self.hidden_dims[1])
+        self.dropout2 = nn.Dropout(self.dropout_rate)
+        
+        # Layer 3: Hidden2 → Hidden3
+        self.fc3 = nn.Linear(self.hidden_dims[1], self.hidden_dims[2])
+        if self.use_batchnorm:
+            self.bn3 = nn.BatchNorm1d(self.hidden_dims[2])
+        self.dropout3 = nn.Dropout(self.dropout_rate * 0.67)
+    
+    def _build_task_heads(self):
+        """Build task-specific prediction heads"""
+        
+        # Defect prediction head (multi-class)
+        self.defect_head = nn.Linear(self.hidden_dims[2], self.num_defect_classes)
+        
+        # Mechanism prediction head (multi-class)
+        self.mechanism_head = nn.Linear(self.hidden_dims[2], self.num_mechanism_classes)
+        
+        # Parameter risk prediction head (regression)
+        self.param_risk_head = nn.Linear(self.hidden_dims[2], self.num_parameters)
+    
+    def _initialize_weights(self):
+        """Initialize weights using Kaiming initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass - returns outputs for all three tasks
+        
+        Args:
+            x: Input tensor (batch_size, input_dim)
+        
+        Returns:
+            Tuple of (defect_logits, mechanism_logits, param_risk_scores)
+            - defect_logits: (batch_size, num_defect_classes)
+            - mechanism_logits: (batch_size, num_mechanism_classes)
+            - param_risk_scores: (batch_size, num_parameters)
+        """
+        # Shared encoder
+        # Layer 1
+        x = self.fc1(x)
+        if self.use_batchnorm:
+            x = self.bn1(x)
+        x = F.relu(x)
+        x = self.dropout1(x)
+        
+        # Layer 2
+        x = self.fc2(x)
+        if self.use_batchnorm:
+            x = self.bn2(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+        
+        # Layer 3
+        x = self.fc3(x)
+        if self.use_batchnorm:
+            x = self.bn3(x)
+        x = F.relu(x)
+        x = self.dropout3(x)
+
+        # Task-specific heads
+        defect_logits = self.defect_head(x)           # (batch, 3)
+        mechanism_logits = self.mechanism_head(x)     # (batch, 3)
+        param_risk_scores = self.param_risk_head(x)   # (batch, 5)
+        
+        # Apply sigmoid to param_risk_scores to constrain to [0, 1]
+        param_risk_scores = torch.sigmoid(param_risk_scores)
+        
+        return defect_logits, mechanism_logits, param_risk_scores
+    
+    def predict_proba(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get probabilities/scores for all tasks (for inference)
+        
+        Args:
+            x: Input tensor (batch_size, input_dim)
+        
+        Returns:
+            Tuple of (defect_probs, mechanism_probs, param_risk_scores)
+            - defect_probs: (batch_size, num_defect_classes) - softmax
+            - mechanism_probs: (batch_size, num_mechanism_classes) - softmax
+            - param_risk_scores: (batch_size, num_parameters) - sigmoid [0-1]
+        """
+        defect_logits, mechanism_logits, param_risk_scores = self.forward(x)
+        
+        # Defect: multi-class (use softmax)
+        defect_probs = F.softmax(defect_logits, dim=1)
+        
+        # Mechanism: multi-class (use softmax)
+        mechanism_probs = F.softmax(mechanism_logits, dim=1)
+        
+        # Parameter risk: already sigmoid applied in forward()
+        
+        return defect_probs, mechanism_probs, param_risk_scores
+    
+    def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Get predictions for all tasks (for inference)
+        
+        Args:
+            x: Input tensor (batch_size, input_dim)
+        
+        Returns:
+            Tuple of (defect_preds, mechanism_preds, param_risk_scores)
+            - defect_preds: (batch_size,) - class indices 0/1/2
+            - mechanism_preds: (batch_size,) - class indices 0/1/2
+            - param_risk_scores: (batch_size, num_parameters) - continuous [0-1]
+        """
+        defect_probs, mechanism_probs, param_risk_scores = self.predict_proba(x)
+        
+        # Defect: argmax for class
+        defect_preds = torch.argmax(defect_probs, dim=1)
+        
+        # Mechanism: argmax for class
+        mechanism_preds = torch.argmax(mechanism_probs, dim=1)
+        
+        # Parameter risk: return as-is (continuous scores)
+        
+        return defect_preds, mechanism_preds, param_risk_scores
+    
+    def count_parameters(self) -> dict:
+        """Count parameters by component"""
+        shared_params = sum(p.numel() for name, p in self.named_parameters() 
+                           if p.requires_grad and 'head' not in name)
+        defect_head_params = sum(p.numel() for name, p in self.named_parameters() 
+                                if p.requires_grad and 'defect_head' in name)
+        mechanism_head_params = sum(p.numel() for name, p in self.named_parameters() 
+                                   if p.requires_grad and 'mechanism_head' in name)
+        param_risk_head_params = sum(p.numel() for name, p in self.named_parameters() 
+                                     if p.requires_grad and 'param_risk_head' in name)
+        
+        total = shared_params + defect_head_params + mechanism_head_params + param_risk_head_params
+        
+        return {
+            'shared': shared_params,
+            'defect_head': defect_head_params,
+            'mechanism_head': mechanism_head_params,
+            'param_risk_head': param_risk_head_params,  # NEW
+            'total': total
+        }
+    
+    def get_architecture_summary(self) -> str:
+        """Get human-readable architecture summary"""
+        params = self.count_parameters()
+        
+        summary = []
+        summary.append("="*60)
+        summary.append("MULTI-TASK MODEL ARCHITECTURE")
+        summary.append("="*60)
+        summary.append(f"Model: DefectMechanismParameterMLP")
+        summary.append(f"\nInput:")
+        summary.append(f"  Features: {self.input_dim}")
+        summary.append(f"\nShared Encoder:")
+        for i, dim in enumerate(self.hidden_dims, 1):
+            summary.append(f"  Layer {i}: {dim} units")
+        summary.append(f"\nTask-Specific Heads:")
+        summary.append(f"  Defect:         {self.num_defect_classes} classes (No Defect, Open Circuit, Solder Bridging)")
+        summary.append(f"  Mechanism:      {self.num_mechanism_classes} classes (No mechanism, Poor paste transfer, Aperture overfill)")
+        summary.append(f"  Parameter Risk: {self.num_parameters} continuous scores (paste_vol, stencil, viscosity, rh, temp)")
+        summary.append(f"\nConfiguration:")
+        summary.append(f"  Dropout rate: {self.dropout_rate}")
+        summary.append(f"  BatchNorm: {self.use_batchnorm}")
+        summary.append(f"\nParameters:")
+        summary.append(f"  Shared encoder:     {params['shared']:>6,}")
+        summary.append(f"  Defect head:        {params['defect_head']:>6,}")
+        summary.append(f"  Mechanism head:     {params['mechanism_head']:>6,}")
+        summary.append(f"  Param risk head:    {params['param_risk_head']:>6,}")
+        summary.append(f"  Total:              {params['total']:>6,}")
+        summary.append("="*60)
+        return "\n".join(summary)
+
+# ============================================================================
 # MODEL FACTORY
 # ============================================================================
 
@@ -423,6 +667,7 @@ def create_model(model_type: str = 'engineered',
                  input_dim: Optional[int] = None,
                  num_defect_classes: int = 3,
                  num_mechanism_classes: int = 3,
+                 num_parameters: int = 5,
                  **kwargs) -> nn.Module:
     """
     Factory function to create models
@@ -450,6 +695,16 @@ def create_model(model_type: str = 'engineered',
             input_dim=input_dim,
             num_defect_classes=num_defect_classes,
             num_mechanism_classes=num_mechanism_classes,
+            **kwargs
+        )
+    elif model_type == 'full_multitask':
+        # Defect + Mechanism + Parameter Risk
+        input_dim = input_dim or 18
+        model = DefectMechanismParameterMLP(
+            input_dim=input_dim,
+            num_defect_classes=num_defect_classes,
+            num_mechanism_classes=num_mechanism_classes,
+            num_parameters=num_parameters,
             **kwargs
         )
     else:
