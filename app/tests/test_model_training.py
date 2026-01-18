@@ -1,5 +1,6 @@
 # run.py
 import argparse
+import torch
 
 from app.data_prep import prepare_data_for_training, save_preprocessing_artifacts
 from app.dataset_loader import (
@@ -30,9 +31,9 @@ def run_data_prep():
     print("Creating dataloaders...")
     # Create dataloaders
     dataloaders = create_dataloaders(
-        data['X_train'], data['y_train'], data['y_mechanism_train'],
-        data['X_val'], data['y_val'], data['y_mechanism_val'],
-        data['X_test'], data['y_test'], data['y_mechanism_test'],
+        data['X_train'], data['y_train'], data['y_mechanism_train'], data['y_param_risk_train'],
+        data['X_val'], data['y_val'], data['y_mechanism_val'], data['y_param_risk_val'],
+        data['X_test'], data['y_test'], data['y_mechanism_test'], data['y_param_risk_test'],
         batch_size=256,
         num_workers=0
     )
@@ -44,16 +45,33 @@ def run_training(data, dataloaders):
     print("\nComputing weights...")
     defect_weights = compute_class_weights(data['y_train'])
     mechanism_weights = compute_class_weights(data['y_mechanism_train'])
+    # Per-parameter weights
+    param_weights = torch.tensor([
+        1.0,  # paste_volume (learning well)
+        1.5,  # stencil_thickness (learning well)
+        4.0,  # paste_viscosity
+        5.0,  # ambient_rh
+        3.0   # ambient_temperature
+    ])
 
     print("\nCreating model...")
-    model = create_model("multitask", input_dim=14, num_defect_classes=3, num_mechanism_classes=3)
+    model = create_model(
+        'full_multitask', 
+        input_dim=14, 
+        num_defect_classes=3, 
+        num_mechanism_classes=3,
+        num_parameters=5
+    )
     print(model.get_architecture_summary())
 
     config = TrainingConfig()
 
+    config.epochs = 80
+
     task_weights = {
-        "defect": 1.0,
-        "mechanism": 0.5
+        "defect": 0.8,
+        "mechanism": 0.8,
+        'param_risk': 1.5
     }
 
     print("\n" + "=" * 60)
@@ -67,12 +85,14 @@ def run_training(data, dataloaders):
         mechanism_weights,
         config,
         task_weights,
+        param_weights,
         save_path=MODEL_PATH
     )
 
     print("\n✓ Training complete!")
     print(f"Val Defect F1:    {history['val_defect_f1'][-1]:.4f}")
     print(f"Val Mechanism F1: {history['val_mechanism_f1'][-1]:.4f}")
+    print(f"MAE Param Viol: {history['val_param_risk_mae'][-1]:.4f}")
 
 
 def run_inference(dataloaders):

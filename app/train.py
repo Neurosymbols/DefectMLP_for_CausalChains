@@ -234,6 +234,76 @@ def multitask_loss(defect_logits: torch.Tensor,
     return total_loss, defect_loss, mechanism_loss
 
 # ============================================================================
+# MULTI-TASK LOSS FUNCTION V2
+# ============================================================================
+
+def multitask_loss_v2(defect_logits: torch.Tensor,
+                   mechanism_logits: torch.Tensor,
+                   param_risk_preds: torch.Tensor,
+                   defect_targets: torch.Tensor,
+                   mechanism_targets: torch.Tensor,
+                   param_risk_targets: torch.Tensor,
+                   defect_weights: torch.Tensor,
+                   mechanism_weights: torch.Tensor,
+                   task_weights: dict = {'defect': 1.0, 'mechanism': 0.5, 'param_risk': 0.3},
+                   param_weights: torch.Tensor = None,
+                   device: str = 'cpu') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Combined loss for defect + mechanism + parameter risk prediction
+    
+    Args:
+        defect_logits: (batch, 3) - raw scores for defect classes
+        mechanism_logits: (batch, 3) - raw scores for mechanism classes
+        param_risk_preds: (batch, 5) - predicted risk scores [0-1] (NEW)
+        defect_targets: (batch,) - defect class indices 0/1/2
+        mechanism_targets: (batch,) - mechanism class indices 0/1/2
+        param_risk_targets: (batch, 5) - ground truth risk scores [0-1] (NEW)
+        defect_weights: (3,) - class weights for defect loss
+        mechanism_weights: (3,) - class weights for mechanism loss
+        task_weights: dict - relative importance of each task
+        device: device to run on
+    
+    Returns:
+        tuple: (total_loss, defect_loss, mechanism_loss, param_risk_loss)
+    """
+    # Defect loss (multi-class classification)
+    defect_loss = nn.functional.cross_entropy(
+        defect_logits,
+        defect_targets,
+        weight=defect_weights.to(device)
+    )
+
+    # Mechanism loss (multi-class classification)
+    mechanism_loss = nn.functional.cross_entropy(
+        mechanism_logits,
+        mechanism_targets,
+        weight=mechanism_weights.to(device)
+    )
+    
+    # Parameter risk loss with per-parameter weights (NEW)
+    if param_weights is not None:
+        # Compute MSE per parameter
+        mse_per_param = (param_risk_preds - param_risk_targets) ** 2  # (batch, 5)
+        
+        # Weight each parameter differently
+        weighted_mse = mse_per_param * param_weights.to(device).unsqueeze(0)  # Broadcast
+        
+        param_risk_loss = weighted_mse.mean()
+    else:
+        # Parameter risk loss (regression)
+        # Use MSE loss for continuous targets
+        param_risk_loss = nn.functional.mse_loss(param_risk_preds, param_risk_targets)
+    
+    # Combined loss (weighted sum)
+    total_loss = (
+        task_weights['defect'] * defect_loss + 
+        task_weights['mechanism'] * mechanism_loss +
+        task_weights['param_risk'] * param_risk_loss
+    )
+    
+    return total_loss, defect_loss, mechanism_loss, param_risk_loss
+
+# ============================================================================
 # TRAINING EPOCH
 # ============================================================================
 
@@ -244,6 +314,7 @@ def train_one_epoch(
         defect_weights: torch.Tensor,
         mechanism_weights: torch.Tensor,  # CHANGED
         task_weights: dict,
+        param_weights: dict,
         device: str,
         epoch: int,
         print_every: int = 10
@@ -271,34 +342,38 @@ def train_one_epoch(
     running_total_loss = 0.0
     running_defect_loss = 0.0
     running_mechanism_loss = 0.0
+    running_param_risk_loss = 0.0
     total_samples = 0
     
     all_defect_outputs = []
     all_defect_targets = []
     all_mechanism_outputs = []
     all_mechanism_targets = []
+    all_param_risk_preds = []
+    all_param_risk_targets = []
     
     start_time = time.time()
     
     # Training loop
-    for batch_idx, (features, defect_targets, mechanism_targets) in enumerate(train_loader):
+    for batch_idx, (features, defect_targets, mechanism_targets, param_risk_targets) in enumerate(train_loader):
         # Move to device
         features = features.to(device)
         defect_targets = defect_targets.to(device)
         mechanism_targets = mechanism_targets.to(device)
+        param_risk_targets = param_risk_targets.to(device)
         
         # Zero gradients
         optimizer.zero_grad()
 
         # Forward pass (returns two outputs)
-        defect_logits, mechanism_logits = model(features)
+        defect_logits, mechanism_logits, param_risk_preds = model(features)
 
         # Compute multi-task loss
-        total_loss, defect_loss, mechanism_loss = multitask_loss(
-            defect_logits, mechanism_logits,
-            defect_targets, mechanism_targets,
+        total_loss, defect_loss, mechanism_loss, param_risk_loss = multitask_loss_v2(
+            defect_logits, mechanism_logits, param_risk_preds,
+            defect_targets, mechanism_targets, param_risk_targets,
             defect_weights, mechanism_weights,
-            task_weights, device
+            task_weights, param_weights, device
         )
         
         # Backward pass
@@ -315,6 +390,7 @@ def train_one_epoch(
         running_total_loss += total_loss.item() * batch_size
         running_defect_loss += defect_loss.item() * batch_size
         running_mechanism_loss += mechanism_loss.item() * batch_size
+        running_param_risk_loss += param_risk_loss.item() * batch_size
         total_samples += batch_size
 
         # Store for metrics calculation
@@ -322,19 +398,23 @@ def train_one_epoch(
         all_defect_targets.append(defect_targets.detach())
         all_mechanism_outputs.append(mechanism_logits.detach())
         all_mechanism_targets.append(mechanism_targets.detach())
+        all_param_risk_preds.append(param_risk_preds.detach())
+        all_param_risk_targets.append(param_risk_targets.detach())
         
         # Print progress
         if (batch_idx + 1) % print_every == 0:
             print(f"  Batch {batch_idx+1}/{len(train_loader)}: "
                   f"Total={total_loss.item():.4f}, "
                   f"Defect={defect_loss.item():.4f}, "
-                  f"Mech={mechanism_loss.item():.4f}")
+                  f"Mech={mechanism_loss.item():.4f}, "
+                  f"Param={param_risk_loss.item():.4f}")
     
     # Calculate epoch metrics
     # weighted epoch average
     epoch_total_loss = running_total_loss / total_samples
     epoch_defect_loss = running_defect_loss / total_samples
     epoch_mechanism_loss = running_mechanism_loss / total_samples
+    epoch_param_risk_loss = running_param_risk_loss / total_samples
     
     # Defect metrics
     all_defect_outputs = torch.cat(all_defect_outputs)
@@ -351,6 +431,17 @@ def train_one_epoch(
     
     mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
     mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
+
+    # Parameter risk metrics
+    all_param_risk_preds = torch.cat(all_param_risk_preds)  # (n_samples, 5)
+    all_param_risk_targets = torch.cat(all_param_risk_targets)  # (n_samples, 5)
+    
+    # Calculate MAE (Mean Absolute Error) for parameter risk
+    param_risk_mae = torch.abs(all_param_risk_preds - all_param_risk_targets).mean().item()
+    
+    # Calculate percentage of predictions within tolerance (e.g., ±0.1)
+    tolerance = 0.1
+    within_tolerance = (torch.abs(all_param_risk_preds - all_param_risk_targets) < tolerance).float().mean().item()
     
     elapsed_time = time.time() - start_time
     
@@ -358,10 +449,13 @@ def train_one_epoch(
         'total_loss': epoch_total_loss,
         'defect_loss': epoch_defect_loss,
         'mechanism_loss': epoch_mechanism_loss,
+        'param_risk_loss': epoch_param_risk_loss,
         'defect_accuracy': defect_acc,
         'defect_f1': defect_f1,
         'mechanism_accuracy': mechanism_acc,
         'mechanism_f1': mechanism_f1,
+        'param_risk_mae': param_risk_mae,
+        'param_risk_within_tolerance': within_tolerance,
         'time': elapsed_time
     }
     
@@ -377,6 +471,7 @@ def validate(model: nn.Module,
             defect_weights: torch.Tensor,
             mechanism_weights: torch.Tensor,
             task_weights: dict,
+            param_weights: dict,
             device: str) -> Dict[str, float]:
     """
     Validate model (multi-task version)
@@ -397,29 +492,33 @@ def validate(model: nn.Module,
     running_total_loss = 0.0
     running_defect_loss = 0.0
     running_mechanism_loss = 0.0
+    running_param_risk_loss = 0.0
     total_samples = 0
     
     all_defect_outputs = []
     all_defect_targets = []
     all_mechanism_outputs = []
     all_mechanism_targets = []
+    all_param_risk_preds = []
+    all_param_risk_targets = []
     
     with torch.no_grad():
-        for features, defect_targets, mechanism_targets in val_loader:
-            # Move to device
+        for features, defect_targets, mechanism_targets, param_risk_targets in val_loader:
             # Move to device
             features = features.to(device)
             defect_targets = defect_targets.to(device)
             mechanism_targets = mechanism_targets.to(device)
+            param_risk_targets = param_risk_targets.to(device)
             
             # Forward pass
-            defect_logits, mechanism_logits = model(features)
+            defect_logits, mechanism_logits, param_risk_preds = model(features)
+
             # Compute loss
-            total_loss, defect_loss, mechanism_loss = multitask_loss(
-                defect_logits, mechanism_logits,
-                defect_targets, mechanism_targets,
+            total_loss, defect_loss, mechanism_loss, param_risk_loss = multitask_loss_v2(
+                defect_logits, mechanism_logits, param_risk_preds,
+                defect_targets, mechanism_targets, param_risk_targets,
                 defect_weights, mechanism_weights,
-                task_weights, device
+                task_weights, param_weights, device
             )
             
             # Track metrics
@@ -427,6 +526,7 @@ def validate(model: nn.Module,
             running_total_loss += total_loss.item() * batch_size
             running_defect_loss += defect_loss.item() * batch_size
             running_mechanism_loss += mechanism_loss.item() * batch_size
+            running_param_risk_loss += param_risk_loss.item() * batch_size
             total_samples += batch_size
 
             # Store for metrics
@@ -434,11 +534,14 @@ def validate(model: nn.Module,
             all_defect_targets.append(defect_targets)
             all_mechanism_outputs.append(mechanism_logits)
             all_mechanism_targets.append(mechanism_targets)
+            all_param_risk_preds.append(param_risk_preds)
+            all_param_risk_targets.append(param_risk_targets)
     
     # Calculate metrics
     val_total_loss = running_total_loss / total_samples
     val_defect_loss = running_defect_loss / total_samples
     val_mechanism_loss = running_mechanism_loss / total_samples
+    val_param_risk_loss = running_param_risk_loss / total_samples
 
     # Defect metrics
     all_defect_outputs = torch.cat(all_defect_outputs)
@@ -455,15 +558,27 @@ def validate(model: nn.Module,
     
     mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
     mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
+
+    # Parameter risk metrics (NEW)
+    all_param_risk_preds = torch.cat(all_param_risk_preds)
+    all_param_risk_targets = torch.cat(all_param_risk_targets)
+    
+    param_risk_mae = torch.abs(all_param_risk_preds - all_param_risk_targets).mean().item()
+    
+    tolerance = 0.1
+    within_tolerance = (torch.abs(all_param_risk_preds - all_param_risk_targets) < tolerance).float().mean().item()
     
     metrics = {
         'total_loss': val_total_loss,
         'defect_loss': val_defect_loss,
         'mechanism_loss': val_mechanism_loss,
+        'param_risk_loss': val_param_risk_loss,
         'defect_accuracy': defect_acc,
         'defect_f1': defect_f1,
         'mechanism_accuracy': mechanism_acc,
-        'mechanism_f1': mechanism_f1
+        'mechanism_f1': mechanism_f1,
+        'param_risk_mae': param_risk_mae,
+        'param_risk_within_tolerance': within_tolerance
     }
     
     return metrics
@@ -536,7 +651,8 @@ def train_model(model: nn.Module,
                defect_weights: Optional[torch.Tensor] = None,
                mechanism_weights: Optional[torch.Tensor] = None,
                config: Optional[TrainingConfig] = None,
-               task_weights: dict = {'defect': 1.0, 'mechanism': 0.5},
+               task_weights: dict = None,
+               param_weights: torch.Tensor = None,
                save_path: str = 'best_model.pth') -> Tuple[nn.Module, Dict]:
     """
     Complete training pipeline
@@ -619,17 +735,23 @@ def train_model(model: nn.Module,
         'train_total_loss': [],
         'train_defect_loss': [],
         'train_mechanism_loss': [],
+        'train_param_risk_loss': [],
         'train_defect_acc': [],
         'train_defect_f1': [],
         'train_mechanism_acc': [],
         'train_mechanism_f1': [],
+        'train_param_risk_mae': [],
+        'train_param_risk_tolerance': [],
         'val_total_loss': [],
         'val_defect_loss': [],
         'val_mechanism_loss': [],
+        'val_param_risk_loss': [],
         'val_defect_acc': [],
         'val_defect_f1': [],
         'val_mechanism_acc': [],
         'val_mechanism_f1': [],
+        'val_param_risk_mae': [],
+        'val_param_risk_tolerance': [],
         'lr': []
     }
     
@@ -652,6 +774,7 @@ def train_model(model: nn.Module,
             defect_weights,
             mechanism_weights,
             task_weights,
+            param_weights,
             device,
             epoch,
             config.print_every
@@ -660,9 +783,11 @@ def train_model(model: nn.Module,
         print(f"\nTrain: Total={train_metrics['total_loss']:.4f}, "
               f"Defect={train_metrics['defect_loss']:.4f}, "
               f"Mech={train_metrics['mechanism_loss']:.4f}, "
+              f"Param={train_metrics['param_risk_loss']:.4f}, "
               f"Time={train_metrics['time']:.1f}s")
         print(f"       Defect F1={train_metrics['defect_f1']:.4f}, "
-              f"Mech F1={train_metrics['mechanism_f1']:.4f}")
+              f"Mech F1={train_metrics['mechanism_f1']:.4f}, "
+              f"Param MAE={train_metrics['param_risk_mae']:.4f}")
         
         # Validate
         val_metrics = validate(
@@ -671,14 +796,17 @@ def train_model(model: nn.Module,
             defect_weights,
             mechanism_weights,
             task_weights,
+            param_weights,
             device
         )
         
         print(f"Val:   Total={val_metrics['total_loss']:.4f}, "
               f"Defect={val_metrics['defect_loss']:.4f}, "
-              f"Mech={val_metrics['mechanism_loss']:.4f}")
+              f"Mech={val_metrics['mechanism_loss']:.4f}, "
+              f"Param={val_metrics['param_risk_loss']:.4f}")
         print(f"       Defect F1={val_metrics['defect_f1']:.4f}, "
-              f"Mech F1={val_metrics['mechanism_f1']:.4f}")
+              f"Mech F1={val_metrics['mechanism_f1']:.4f}, "
+              f"Param MAE={val_metrics['param_risk_mae']:.4f}")
         
         # Update learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -696,6 +824,9 @@ def train_model(model: nn.Module,
         history['train_defect_f1'].append(train_metrics['defect_f1'])
         history['train_mechanism_acc'].append(train_metrics['mechanism_accuracy'])
         history['train_mechanism_f1'].append(train_metrics['mechanism_f1'])
+        history['train_param_risk_loss'].append(train_metrics['param_risk_loss'])
+        history['train_param_risk_mae'].append(train_metrics['param_risk_mae'])
+        history['train_param_risk_tolerance'].append(train_metrics['param_risk_within_tolerance'])
         
         history['val_total_loss'].append(val_metrics['total_loss'])
         history['val_defect_loss'].append(val_metrics['defect_loss'])
@@ -704,6 +835,9 @@ def train_model(model: nn.Module,
         history['val_defect_f1'].append(val_metrics['defect_f1'])
         history['val_mechanism_acc'].append(val_metrics['mechanism_accuracy'])
         history['val_mechanism_f1'].append(val_metrics['mechanism_f1'])
+        history['val_param_risk_loss'].append(val_metrics['param_risk_loss'])
+        history['val_param_risk_mae'].append(val_metrics['param_risk_mae'])
+        history['val_param_risk_tolerance'].append(val_metrics['param_risk_within_tolerance'])
         
         history['lr'].append(current_lr)
         
