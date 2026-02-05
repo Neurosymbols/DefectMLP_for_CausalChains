@@ -1,15 +1,12 @@
 import pandas as pd
 from pymongo import MongoClient
 from datetime import datetime, timezone
-from collections import Counter, defaultdict
+from .constants import DB, COL, MONGO_URI
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-MONGO_URI = "mongodb://localhost:27017"
-DB_NAME = "pcb_manufacturing"
-COLLECTION_NAME = "synthetic_boards_v2"
-CSV_PATH = "./training_data_200k_v3.csv"
+CSV_PATH = "./training_data_200k_v4.csv"
 
 # -----------------------------
 # HELPERS
@@ -31,11 +28,16 @@ def normalize_mechanisms(mech_str):
 df = pd.read_csv(CSV_PATH)
 
 client = MongoClient(MONGO_URI)
-collection = client[DB_NAME][COLLECTION_NAME]
+collection = client[DB][COL]
 
 documents = []
+risk_columns = [col for col in df.columns if "risk" in col.lower()]
 
 for _, row in df.iterrows():
+    parameter_violations = {}
+    for risk_col in risk_columns:
+        risk_value = float(row[risk_col])
+        parameter_violations["_".join(risk_col.lower().split())] = risk_value
 
     doc = {
         "board_id": f"PCB{int(row['board_number'])}",
@@ -43,23 +45,21 @@ for _, row in df.iterrows():
         "board_number": int(row["board_number"]),
 
         "parameters": {
-            "paste_volume_per_aperture": float(row["Paste volume per aperture"]),
+            "paste_volume": float(row["Paste volume per aperture"]),
             "stencil_thickness": float(row["Stencil thickness"]),
             "paste_viscosity": float(row["Paste viscosity"]),
             "ambient_rh": float(row["Ambient RH"]),
             "ambient_temperature": float(row["Ambient temperature"])
         },
-
+        "parameter_violations": parameter_violations,
         "labels": {
             "defect": row["Defect"],
             "mechanism_causes": (
                 None if pd.isna(row["mech causes"]) or row["mech causes"] == ""
                 else row["mech causes"]
             ),
-            "root_causes": (
-                None if pd.isna(row["root causes"]) or row["root causes"] == ""
-                else row["root causes"]
-            )
+            "solder_printing_mechanism": row['Solder Printing Mechanism'],
+            "reflow_mechanism": row['Reflow Mechanism']
         },
 
         "temporal": {

@@ -52,7 +52,7 @@ USE_BATCHNORM = True
 # data prep constants
 MONGO_URI = 'mongodb://localhost:27017/'
 DB = 'pcb_manufacturing'
-COL = 'synthetic_boards_v2'
+COL = 'synthetic_boards_v3'
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15

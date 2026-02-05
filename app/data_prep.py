@@ -52,22 +52,14 @@ def load_from_mongodb(limit: Optional[int] = None) -> pd.DataFrame:
             'board_id': doc['board_id'],
             'batch_id': doc['batch_id'],
             'board_number': doc['board_number'],
-            
             # Raw parameters
-            'paste_volume': doc['parameters']['paste_volume_per_aperture'],
-            'stencil_thickness': doc['parameters']['stencil_thickness'],
-            'paste_viscosity': doc['parameters']['paste_viscosity'],
-            'ambient_rh': doc['parameters']['ambient_rh'],
-            'ambient_temperature': doc['parameters']['ambient_temperature'],
-            
+            **doc['parameters'],
+            # Parameter Violations
+            **doc['parameter_violations'],
             # Labels
-            'defect': doc['labels']['defect'],
-            'mech causes': doc['labels'].get('mechanism_causes'),
-            'root causes': doc['labels'].get('root_causes'),
-            
+            **doc['labels'],
             # Temporal
-            'hour_of_day': doc['temporal']['hour_of_day'],
-            'stencil_batch': doc['temporal']['stencil_batch']
+            **doc['temporal']
         }
         data.append(row)
     
@@ -202,7 +194,7 @@ def encode_defect_labels(df_train: pd.DataFrame,
 
 def encode_mechanism_labels(df_train: pd.DataFrame,
                            df_val: pd.DataFrame,
-                           df_test: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, LabelEncoder]:
+                           df_test: pd.DataFrame) -> Dict:
     """
     Encode mechanism labels to integers
     
@@ -222,49 +214,59 @@ def encode_mechanism_labels(df_train: pd.DataFrame,
     
     Returns:
         Tuple of (y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder)
-    """
-        # Helper function to create string labels from binary columns
-    def get_mechanism_label(row):
-        """
-        Convert binary mechanism columns to single string label
-        Mutually exclusive: only one can be True
-        """
-        if row['apertureoverfill'] == 1:
-            return 'Aperture overfill'
-        elif row['poorpastetransfer'] == 1:
-            return 'Poor paste transfer'
-        else:
-            return 'No mechanism'
-    # Create string label column for each split
-    df_train = df_train.copy()
-    df_val = df_val.copy()
-    df_test = df_test.copy()
-    
-    df_train['mechanism_label'] = df_train.apply(get_mechanism_label, axis=1)
-    df_val['mechanism_label'] = df_val.apply(get_mechanism_label, axis=1)
-    df_test['mechanism_label'] = df_test.apply(get_mechanism_label, axis=1)
-    
+    """    
     # Encode using LabelEncoder
-    mechanism_encoder = LabelEncoder()
-    y_mechanism_train = mechanism_encoder.fit_transform(df_train['mechanism_label'])
-    y_mechanism_val = mechanism_encoder.transform(df_val['mechanism_label'])
-    y_mechanism_test = mechanism_encoder.transform(df_test['mechanism_label'])
+    printing_mechanism_encoder = LabelEncoder()
+    y_print_mechanism_train = printing_mechanism_encoder.fit_transform(df_train['solder_printing_mechanism'])
+    y_print_mechanism_val = printing_mechanism_encoder.transform(df_val['solder_printing_mechanism'])
+    y_print_mechanism_test = printing_mechanism_encoder.transform(df_test['solder_printing_mechanism'])
+
+    # Encode using LabelEncoder
+    reflow_mechanism_encoder = LabelEncoder()
+    y_reflow_mechanism_train = reflow_mechanism_encoder.fit_transform(df_train['reflow_mechanism'])
+    y_reflow_mechanism_val = reflow_mechanism_encoder.transform(df_val['reflow_mechanism'])
+    y_reflow_mechanism_test = reflow_mechanism_encoder.transform(df_test['reflow_mechanism'])
+
 
     # Print mapping
     print("\n" + "="*60)
-    print("MECHANISM LABEL ENCODING")
+    print("PRINTING MECHANISM LABEL ENCODING")
     print("="*60)
     print("Class mapping:")
-    for idx, class_name in enumerate(mechanism_encoder.classes_):
-        count_train = (y_mechanism_train == idx).sum()
-        count_val = (y_mechanism_val == idx).sum()
-        count_test = (y_mechanism_test == idx).sum()
+    for idx, class_name in enumerate(printing_mechanism_encoder.classes_):
+        count_train = (y_print_mechanism_train == idx).sum()
+        count_val = (y_print_mechanism_val == idx).sum()
+        count_test = (y_print_mechanism_test == idx).sum()
+        print(f"  {idx}: {class_name:20s} "
+              f"(Train: {count_train:5d}, Val: {count_val:4d}, Test: {count_test:4d})")
+    
+    # Print mapping
+    print("\n" + "="*60)
+    print("REFLOW MECHANISM LABEL ENCODING")
+    print("="*60)
+    print("Class mapping:")
+    for idx, class_name in enumerate(reflow_mechanism_encoder.classes_):
+        count_train = (y_reflow_mechanism_train == idx).sum()
+        count_val = (y_reflow_mechanism_val == idx).sum()
+        count_test = (y_reflow_mechanism_test == idx).sum()
         print(f"  {idx}: {class_name:20s} "
               f"(Train: {count_train:5d}, Val: {count_val:4d}, Test: {count_test:4d})")
     
     print("\n✓ Mutual exclusivity verified across all splits")
-    
-    return y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder
+    return {
+        'printing_stage': {
+            'y_print_mech_train': y_print_mechanism_train,
+            'y_print_mech_val': y_print_mechanism_val,
+            'y_print_mech_test': y_print_mechanism_test,
+            'print_encoder': printing_mechanism_encoder
+        },
+        'reflow_stage': {
+            'y_reflow_mech_train': y_reflow_mechanism_train,
+            'y_reflow_mech_val': y_reflow_mechanism_val,
+            'y_reflow_mech_test': y_reflow_mechanism_test,
+            'reflow_encoder': reflow_mechanism_encoder
+        }
+    }
     
 
 # ============================================================================
@@ -354,23 +356,12 @@ def prepare_data_for_training(data_source: str,
     feature_info = get_feature_columns()
     print(f"Engineered {len(feature_info['all_engineered'])} features")
     print(f"Total features: {len(feature_info['all_features'])}")
-
-    print("\nLabelling mechanisms...")
-    df_engineered = label_mechanisms(df_engineered)
-
-    print("\nLabelling parameter violations...")
-    df_engineered = create_parameter_risk_labels(
-        df_engineered,
-        PARAMETER_SPECS,
-        parameter_column_map
-    )
     
     # Step 3: Split by batch
     print("\nStep 3: Splitting data by batch...")
     df_train, df_val, df_test = grouped_split(
         df_engineered
     )
-    
     # Step 4: Extract features
     print("\nStep 4: Extracting feature arrays...")
     X_train = df_train[feature_info['all_features']].values #train_n x f
@@ -386,19 +377,25 @@ def prepare_data_for_training(data_source: str,
     y_train, y_val, y_test, defect_encoder = encode_defect_labels(
         df_train, df_val, df_test
     )
-
     # Step 5b: Encode mechanism labels
     print("\nStep 5b: Encoding mechanism labels...")
-    y_mechanism_train, y_mechanism_val, y_mechanism_test, mechanism_encoder = encode_mechanism_labels(
+    mech_encoders = encode_mechanism_labels(
         df_train, df_val, df_test
     )
+    # ---- Printing stage
+    print_stage = mech_encoders['printing_stage']
+    print_encoder = print_stage['print_encoder']
+    # ---- Reflow stage
+    reflow_stage = mech_encoders['reflow_stage']
+    reflow_encoder = reflow_stage['reflow_encoder']
 
     # Step 5c: Extract parameter risk scores
     print("\nStep 5c: Extracting parameter risk scores...")
-    risk_cols = [f'{p}_risk' for p in PARAMETER_SPECS.keys()]
-    y_param_risk_train = df_train[risk_cols].values  # (n_train, 5)
-    y_param_risk_val = df_val[risk_cols].values      # (n_val, 5)
-    y_param_risk_test = df_test[risk_cols].values    # (n_test, 5)
+    print(df.columns)
+    risk_cols = [col for col in df.columns if "risk" in col.lower()]
+    y_param_risk_train = df_train[risk_cols].values
+    y_param_risk_val = df_val[risk_cols].values
+    y_param_risk_test = df_test[risk_cols].values 
 
     print(f"Parameter risk shape:")
     print(f"  Train: {y_param_risk_train.shape}")
@@ -443,18 +440,31 @@ def prepare_data_for_training(data_source: str,
             defect_encoder.classes_[i]: int((y_test == i).sum())
             for i in range(len(defect_encoder.classes_))
         },
-        # Mechanism distribution
-        'train_mechanism_dist': {
-            mechanism_encoder.classes_[i]: int((y_mechanism_train == i).sum())
-            for i in range(len(mechanism_encoder.classes_))
+        # Printing Mechanism distribution
+        'train_printing_mechanism_dist': {
+            print_encoder.classes_[i]: int((print_stage['y_print_mech_train'] == i).sum())
+            for i in range(len(print_encoder.classes_))
         },
-        'val_mechanism_dist': {
-            mechanism_encoder.classes_[i]: int((y_mechanism_val == i).sum())
-            for i in range(len(mechanism_encoder.classes_))
+        'val_printing_mechanism_dist': {
+            print_encoder.classes_[i]: int((print_stage['y_print_mech_val'] == i).sum())
+            for i in range(len(print_encoder.classes_))
         },
-        'test_mechanism_dist': {
-            mechanism_encoder.classes_[i]: int((y_mechanism_test == i).sum())
-            for i in range(len(mechanism_encoder.classes_))
+        'test_printing_mechanism_dist': {
+            print_encoder.classes_[i]: int((print_stage['y_print_mech_test'] == i).sum())
+            for i in range(len(print_encoder.classes_))
+        },
+        # Reflow Mechanism distribution
+        'train_reflow_mechanism_dist': {
+            reflow_encoder.classes_[i]: int((reflow_stage['y_reflow_mech_train'] == i).sum())
+            for i in range(len(reflow_encoder.classes_))
+        },
+        'val_reflow_mechanism_dist': {
+            reflow_encoder.classes_[i]: int((reflow_stage['y_reflow_mech_val'] == i).sum())
+            for i in range(len(reflow_encoder.classes_))
+        },
+        'test_reflow_mechanism_dist': {
+            reflow_encoder.classes_[i]: int((reflow_stage['y_reflow_mech_test'] == i).sum())
+            for i in range(len(reflow_encoder.classes_))
         }
     }
     
@@ -470,14 +480,12 @@ def prepare_data_for_training(data_source: str,
         'y_train': y_train,
         'y_val': y_val,
         'y_test': y_test,
-        'y_mechanism_train': y_mechanism_train,
-        'y_mechanism_val': y_mechanism_val,
-        'y_mechanism_test': y_mechanism_test,
+        **mech_encoders['printing_stage'],
+        **mech_encoders['reflow_stage'],
         'y_param_risk_train': y_param_risk_train,
         'y_param_risk_val': y_param_risk_val,
         'y_param_risk_test': y_param_risk_test,
         'defect_encoder': defect_encoder,
-        'mechanism_encoder': mechanism_encoder,
         'scaler': scaler,
         'feature_info': feature_info,
         'split_info': split_info,
@@ -485,11 +493,14 @@ def prepare_data_for_training(data_source: str,
     }
 
 
-def save_preprocessing_artifacts(defect_encoder: LabelEncoder,
-                                 mechanism_encoder: LabelEncoder,
-                                 scaler: Optional[StandardScaler],
-                                 feature_info: Dict,
-                                 filepath: str = 'preprocessing_artifacts.pkl'):
+def save_preprocessing_artifacts(
+    defect_encoder: LabelEncoder,
+    print_encoder: LabelEncoder,
+    reflow_encoder: LabelEncoder,
+    scaler: Optional[StandardScaler],
+    feature_info: Dict,
+    filepath: str = 'preprocessing_artifacts.pkl'
+):
     """
     Save preprocessing objects for later use (inference)
     
@@ -502,7 +513,8 @@ def save_preprocessing_artifacts(defect_encoder: LabelEncoder,
     """
     artifacts = {
         'defect_encoder': defect_encoder,
-        'mechanism_encoder': mechanism_encoder,
+        'print_encoder': print_encoder,
+        'reflow_encoder': reflow_encoder,
         'scaler': scaler,
         'feature_info': feature_info
     }
