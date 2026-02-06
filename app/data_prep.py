@@ -391,7 +391,6 @@ def prepare_data_for_training(data_source: str,
 
     # Step 5c: Extract parameter risk scores
     print("\nStep 5c: Extracting parameter risk scores...")
-    print(df.columns)
     risk_cols = [col for col in df.columns if "risk" in col.lower()]
     y_param_risk_train = df_train[risk_cols].values
     y_param_risk_val = df_val[risk_cols].values

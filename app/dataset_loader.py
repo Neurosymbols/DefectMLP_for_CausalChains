@@ -36,7 +36,8 @@ class PCBDefectDataset(Dataset):
     def __init__(self, 
                  X: np.ndarray, 
                  y_defect: np.ndarray,
-                 y_mechanism: np.ndarray,
+                 y_print_mechanism: np.ndarray,
+                 y_reflow_mechanism: np.ndarray,
                  y_param_risk: np.ndarray,
                  transform=None):
         """
@@ -50,18 +51,23 @@ class PCBDefectDataset(Dataset):
         # Convert to float32 (PyTorch default)
         self.X = torch.from_numpy(X).float()
         self.y_defect = torch.from_numpy(y_defect).long()      # long for multi-class
-        self.y_mechanism = torch.from_numpy(y_mechanism).long() # long for multi-class
+        self.y_print_mechanism = torch.from_numpy(y_print_mechanism).long() # long for multi-class
+        self.y_reflow_mechanism = torch.from_numpy(y_reflow_mechanism).long() # long for multi-class
         self.y_param_risk = torch.from_numpy(y_param_risk).float()  # Regression
         # self.transform = transform
         
-        assert len(self.X) == len(self.y_defect) == len(self.y_mechanism) == len(self.y_param_risk), \
+        assert len(self.X) == \
+            len(self.y_defect) == \
+            len(self.y_print_mechanism) == \
+            len(self.y_reflow_mechanism) == \
+            len(self.y_param_risk), \
             "X, y_defect, y_mechanism, and y_param_risk must have same length"
     
     def __len__(self) -> int:
         """Return number of samples"""
         return len(self.X)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get one sample
         
@@ -69,26 +75,42 @@ class PCBDefectDataset(Dataset):
             idx: Sample index
         
         Returns:
-            Tuple of (features, defect_label, mechanism_label, param_risk_scores)
+            Tuple of (
+            features, 
+            defect_label, 
+            print_mechanism_label, 
+            reflow_mechanism_label, 
+            param_risk_scores
+        )
         """
         # we can treat torch.tensor and np.ndarray as mentally equivalent because of shared properties but technically they are not equivalent
         features = self.X[idx]
         defect_label = self.y_defect[idx]
-        mechanism_label = self.y_mechanism[idx]
+        print_mechanism_label = self.y_print_mechanism[idx]
+        reflow_mechanism_label = self.y_reflow_mechanism[idx]
         param_risk = self.y_param_risk[idx]
         # # Apply transform if provided
         # if self.transform:
         #     features = self.transform(features)
         
-        return features, defect_label, mechanism_label, param_risk
+        return (
+            features, 
+            defect_label, 
+            print_mechanism_label,
+            reflow_mechanism_label, 
+            param_risk)
     
     def get_defect_distribution(self) -> Dict[int, int]:
         """Get count of samples per class (defect)"""
         return dict(Counter(self.y_defect.numpy()))
     
-    def get_mechanism_distribution(self) -> Dict[int, int]:
-        """Get count of samples per mechanism class"""
-        return dict(Counter(self.y_mechanism.numpy()))
+    def get_print_mechanism_distribution(self) -> Dict[int, int]:
+        """Get count of samples per print stage mechanism class"""
+        return dict(Counter(self.y_print_mechanism.numpy()))
+    
+    def get_reflow_mechanism_distribution(self) -> Dict[int, int]:
+        """Get count of samples per reflow stage mechanism class"""
+        return dict(Counter(self.y_reflow_mechanism.numpy()))
     
     def get_param_risk_statistics(self) -> Dict[str, Dict[str, float]]:
         """Get statistics for parameter risk scores"""
@@ -174,21 +196,12 @@ def compute_class_weights(y_train: np.ndarray,
 # DATALOADER CREATION
 # ============================================================================
 
-def create_dataloaders(X_train: np.ndarray,
-                      y_train: np.ndarray,
-                      y_mechanism_train: np.ndarray,
-                      y_param_risk_train: np.ndarray,
-                      X_val: np.ndarray,
-                      y_val: np.ndarray,
-                      y_mechanism_val: np.ndarray,
-                      y_param_risk_val: np.ndarray,
-                      X_test: np.ndarray,
-                      y_test: np.ndarray,
-                      y_mechanism_test: np.ndarray,
-                      y_param_risk_test: np.ndarray,
-                      batch_size: int = 256,
-                      num_workers: int = 0,
-                      shuffle_train: bool = True) -> Dict[str, DataLoader]:
+def create_dataloaders(
+    data: Dict,
+    batch_size: int = 256,
+    num_workers: int = 0,
+    shuffle_train: bool = True
+) -> Dict[str, DataLoader]:
     """
     Create DataLoaders for train/val/test sets with mechanism labels
     
@@ -204,9 +217,27 @@ def create_dataloaders(X_train: np.ndarray,
         Dictionary with 'train', 'val', 'test' DataLoaders
     """
     # Create datasets
-    train_dataset = PCBDefectDataset(X_train, y_train, y_mechanism_train, y_param_risk_train)
-    val_dataset = PCBDefectDataset(X_val, y_val, y_mechanism_val, y_param_risk_val)
-    test_dataset = PCBDefectDataset(X_test, y_test, y_mechanism_test, y_param_risk_test)
+    train_dataset = PCBDefectDataset(
+        data['X_train'], 
+        data['y_train'], 
+        data['y_print_mech_train'],
+        data['y_reflow_mech_train'],
+        data['y_param_risk_train']
+    )
+    val_dataset = PCBDefectDataset(
+        data["X_val"], 
+        data["y_val"], 
+        data['y_print_mech_val'],
+        data['y_reflow_mech_val'],
+        data['y_param_risk_val']
+    )
+    test_dataset = PCBDefectDataset(
+        data["X_test"], 
+        data["y_test"], 
+        data['y_print_mech_test'],
+        data['y_reflow_mech_test'],
+        data['y_param_risk_test']
+    )
     
     # Create dataloaders
     train_loader = DataLoader(
@@ -260,10 +291,15 @@ def create_dataloaders(X_train: np.ndarray,
     print(f"  Val:   {val_dataset.get_defect_distribution()}")
     print(f"  Test:  {test_dataset.get_defect_distribution()}")
     
-    print(f"\nMechanism distribution:")
-    print(f"  Train: {train_dataset.get_mechanism_distribution()}")
-    print(f"  Val:   {val_dataset.get_mechanism_distribution()}")
-    print(f"  Test:  {test_dataset.get_mechanism_distribution()}")
+    print(f"\nPrinting Stage Mechanism distribution:")
+    print(f"  Train: {train_dataset.get_print_mechanism_distribution()}")
+    print(f"  Val:   {val_dataset.get_print_mechanism_distribution()}")
+    print(f"  Test:  {test_dataset.get_print_mechanism_distribution()}")
+
+    print(f"\nReflow Stage Mechanism distribution:")
+    print(f"  Train: {train_dataset.get_print_mechanism_distribution()}")
+    print(f"  Val:   {val_dataset.get_print_mechanism_distribution()}")
+    print(f"  Test:  {test_dataset.get_print_mechanism_distribution()}")
 
     # Print parameter risk statistics
     print(f"\nParameter risk statistics (Train):")
