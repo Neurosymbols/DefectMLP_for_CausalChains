@@ -22,18 +22,15 @@ def run_data_prep():
     data = prepare_data_for_training(data_source='mongodb')
     save_preprocessing_artifacts(
         data['defect_encoder'],
-        data['mechanism_encoder'],
+        data['print_encoder'],
+        data['reflow_encoder'],
         data['scaler'],
         data['feature_info'],
         "./app/multitask_model/preprocessing_artifacts.pkl"
     )
-
-    print("Creating dataloaders...")
     # Create dataloaders
     dataloaders = create_dataloaders(
-        data['X_train'], data['y_train'], data['y_mechanism_train'], data['y_param_risk_train'],
-        data['X_val'], data['y_val'], data['y_mechanism_val'], data['y_param_risk_val'],
-        data['X_test'], data['y_test'], data['y_mechanism_test'], data['y_param_risk_test'],
+        data,
         batch_size=256,
         num_workers=0
     )
@@ -43,25 +40,32 @@ def run_data_prep():
 
 def run_training(data, dataloaders):
     print("\nComputing weights...")
+    # Compute weights
     defect_weights = compute_class_weights(data['y_train'])
-    mechanism_weights = compute_class_weights(data['y_mechanism_train'])
+    print_mechanism_weights = compute_class_weights(data['y_print_mech_train'])
+    reflow_mechanism_weights = compute_class_weights(data['y_reflow_mech_train'])
     # Per-parameter weights
     param_weights = torch.tensor([
         1.0,  # paste_volume (learning well)
         1.5,  # stencil_thickness (learning well)
         4.0,  # paste_viscosity
         5.0,  # ambient_rh
-        3.0   # ambient_temperature
+        3.0,  # ambient_temperature
+        1.0,  # peak_reflow_temperature
+        1.0,  # time_above_liquidus
     ])
 
     print("\nCreating model...")
+    # Create multi-task model
     model = create_model(
-        'full_multitask', 
+        'full_multitask_multistage', 
         input_dim=14, 
         num_defect_classes=3, 
-        num_mechanism_classes=3,
-        num_parameters=5
+        num_mechanism_stages_classes={'print': 3, 'reflow': 3},
+        num_parameters=7
     )
+
+    # Print summary
     print(model.get_architecture_summary())
 
     config = TrainingConfig()
@@ -70,7 +74,8 @@ def run_training(data, dataloaders):
 
     task_weights = {
         "defect": 0.8,
-        "mechanism": 0.8,
+        "print_mechanism": 0.8,
+        "reflow_mechanism": 0.8,
         'param_risk': 1.5
     }
 
@@ -82,7 +87,8 @@ def run_training(data, dataloaders):
         model,
         dataloaders,
         defect_weights,
-        mechanism_weights,
+        print_mechanism_weights,
+        reflow_mechanism_weights,
         config,
         task_weights,
         param_weights,
@@ -91,7 +97,8 @@ def run_training(data, dataloaders):
 
     print("\n✓ Training complete!")
     print(f"Val Defect F1:    {history['val_defect_f1'][-1]:.4f}")
-    print(f"Val Mechanism F1: {history['val_mechanism_f1'][-1]:.4f}")
+    print(f"Val Printing Mechanism F1: {history['val_print_mechanism_f1'][-1]:.4f}")
+    print(f"Val Reflow Mechanism F1: {history['val_reflow_mechanism_f1'][-1]:.4f}")
     print(f"MAE Param Viol: {history['val_param_risk_mae'][-1]:.4f}")
 
 

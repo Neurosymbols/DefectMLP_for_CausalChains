@@ -304,6 +304,104 @@ def multitask_loss_v2(defect_logits: torch.Tensor,
     return total_loss, defect_loss, mechanism_loss, param_risk_loss
 
 # ============================================================================
+# MULTI-TASK LOSS FUNCTION V3
+# ============================================================================
+
+def multitask_loss_v3(
+        defect_logits: torch.Tensor,
+        print_mechanism_logits: torch.Tensor,
+        reflow_mechanism_logits: torch.Tensor,
+        param_risk_preds: torch.Tensor,
+        defect_targets: torch.Tensor,
+        print_mechanism_targets: torch.Tensor,
+        reflow_mechanism_targets: torch.Tensor,
+        param_risk_targets: torch.Tensor,
+        defect_weights: torch.Tensor,
+        print_mechanism_weights: torch.Tensor,
+        reflow_mechanism_weights: torch.Tensor,
+        task_weights: dict = {
+            'defect': 1.0,
+            'print_mechanism': 0.5,
+            'reflow_mechanism': 0.5,
+            'param_risk': 0.3
+        },
+        param_weights: torch.Tensor = None,
+        device: str = 'cpu'
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor
+    ]:
+    """
+    Combined loss for:
+      - defect classification
+      - printing mechanism classification
+      - reflow mechanism classification
+      - parameter risk regression
+    """
+
+    # ------------------------------------------------------------------
+    # Defect loss (multi-class classification)
+    # ------------------------------------------------------------------
+    defect_loss = nn.functional.cross_entropy(
+        defect_logits,
+        defect_targets,
+        weight=defect_weights.to(device)
+    )
+
+    # ------------------------------------------------------------------
+    # Printing mechanism loss
+    # ------------------------------------------------------------------
+    print_mechanism_loss = nn.functional.cross_entropy(
+        print_mechanism_logits,
+        print_mechanism_targets,
+        weight=print_mechanism_weights.to(device)
+    )
+
+    # ------------------------------------------------------------------
+    # Reflow mechanism loss
+    # ------------------------------------------------------------------
+    reflow_mechanism_loss = nn.functional.cross_entropy(
+        reflow_mechanism_logits,
+        reflow_mechanism_targets,
+        weight=reflow_mechanism_weights.to(device)
+    )
+
+    # ------------------------------------------------------------------
+    # Parameter risk loss (regression)
+    # ------------------------------------------------------------------
+    if param_weights is not None:
+        # Per-parameter weighted MSE
+        mse_per_param = (param_risk_preds - param_risk_targets) ** 2  # (batch, n_params)
+        weighted_mse = mse_per_param * param_weights.to(device).unsqueeze(0)
+        param_risk_loss = weighted_mse.mean()
+    else:
+        param_risk_loss = nn.functional.mse_loss(
+            param_risk_preds,
+            param_risk_targets
+        )
+
+    # ------------------------------------------------------------------
+    # Total weighted loss
+    # ------------------------------------------------------------------
+    total_loss = (
+        task_weights['defect'] * defect_loss +
+        task_weights['print_mechanism'] * print_mechanism_loss +
+        task_weights['reflow_mechanism'] * reflow_mechanism_loss +
+        task_weights['param_risk'] * param_risk_loss
+    )
+
+    return (
+        total_loss,
+        defect_loss,
+        print_mechanism_loss,
+        reflow_mechanism_loss,
+        param_risk_loss
+    )
+
+# ============================================================================
 # TRAINING EPOCH
 # ============================================================================
 
@@ -312,7 +410,8 @@ def train_one_epoch(
         train_loader: DataLoader,
         optimizer: optim.Optimizer,
         defect_weights: torch.Tensor,
-        mechanism_weights: torch.Tensor,  # CHANGED
+        print_mechanism_weights: torch.Tensor,
+        reflow_mechanism_weights: torch.Tensor,
         task_weights: dict,
         param_weights: dict,
         device: str,
@@ -320,147 +419,159 @@ def train_one_epoch(
         print_every: int = 10
     ) -> Dict[str, float]:
     """
-    Train for one epoch
-    
-    Args:
-        model: PyTorch model
-        train_loader: Training DataLoader
-        optimizer: Optimizer
-        defect_weights: Class weights for defect loss
-        mechanism_weights: Class weights for mechanism loss (CHANGED)
-        task_weights: Task importance weights
-        device: Device to train on
-        epoch: Current epoch number
-        print_every: Print stats every N batches
-    
-    Returns:
-        Dictionary with average metrics for the epoch
+    Train for one epoch (multi-task version with print + reflow mechanisms)
     """
     model.train()
     
     # Metrics tracking
     running_total_loss = 0.0
     running_defect_loss = 0.0
-    running_mechanism_loss = 0.0
+    running_print_mechanism_loss = 0.0
+    running_reflow_mechanism_loss = 0.0
     running_param_risk_loss = 0.0
     total_samples = 0
     
     all_defect_outputs = []
     all_defect_targets = []
-    all_mechanism_outputs = []
-    all_mechanism_targets = []
+    all_print_mechanism_outputs = []
+    all_print_mechanism_targets = []
+    all_reflow_mechanism_outputs = []
+    all_reflow_mechanism_targets = []
     all_param_risk_preds = []
     all_param_risk_targets = []
     
     start_time = time.time()
     
     # Training loop
-    for batch_idx, (features, defect_targets, mechanism_targets, param_risk_targets) in enumerate(train_loader):
+    for batch_idx, (
+        features,
+        defect_targets,
+        print_mechanism_targets,
+        reflow_mechanism_targets,
+        param_risk_targets
+    ) in enumerate(train_loader):
+
         # Move to device
         features = features.to(device)
         defect_targets = defect_targets.to(device)
-        mechanism_targets = mechanism_targets.to(device)
+        print_mechanism_targets = print_mechanism_targets.to(device)
+        reflow_mechanism_targets = reflow_mechanism_targets.to(device)
         param_risk_targets = param_risk_targets.to(device)
         
-        # Zero gradients
         optimizer.zero_grad()
 
-        # Forward pass (returns two outputs)
-        defect_logits, mechanism_logits, param_risk_preds = model(features)
+        # Forward pass
+        defect_logits, print_mechanism_logits, reflow_mechanism_logits, param_risk_preds = model(features)
 
         # Compute multi-task loss
-        total_loss, defect_loss, mechanism_loss, param_risk_loss = multitask_loss_v2(
-            defect_logits, mechanism_logits, param_risk_preds,
-            defect_targets, mechanism_targets, param_risk_targets,
-            defect_weights, mechanism_weights,
-            task_weights, param_weights, device
+        total_loss, defect_loss, print_mechanism_loss, reflow_mechanism_loss, param_risk_loss = multitask_loss_v3(
+            defect_logits,
+            print_mechanism_logits,
+            reflow_mechanism_logits,
+            param_risk_preds,
+            defect_targets,
+            print_mechanism_targets,
+            reflow_mechanism_targets,
+            param_risk_targets,
+            defect_weights,
+            print_mechanism_weights,
+            reflow_mechanism_weights,
+            task_weights,
+            param_weights,
+            device
         )
         
-        # Backward pass
+        # Backward + optimize
         total_loss.backward()
-        
-        # Optimizer step
-        # update weights and biases
         optimizer.step()
         
-        # Track metrics
-        # defect_loss.item() = mean loss per sample in batch
-        # mechanism_loss.item() = mean loss per sample in batch
+        # Track losses
         batch_size = features.size(0)
         running_total_loss += total_loss.item() * batch_size
         running_defect_loss += defect_loss.item() * batch_size
-        running_mechanism_loss += mechanism_loss.item() * batch_size
+        running_print_mechanism_loss += print_mechanism_loss.item() * batch_size
+        running_reflow_mechanism_loss += reflow_mechanism_loss.item() * batch_size
         running_param_risk_loss += param_risk_loss.item() * batch_size
         total_samples += batch_size
 
-        # Store for metrics calculation
+        # Store outputs for metrics
         all_defect_outputs.append(defect_logits.detach())
         all_defect_targets.append(defect_targets.detach())
-        all_mechanism_outputs.append(mechanism_logits.detach())
-        all_mechanism_targets.append(mechanism_targets.detach())
+        all_print_mechanism_outputs.append(print_mechanism_logits.detach())
+        all_print_mechanism_targets.append(print_mechanism_targets.detach())
+        all_reflow_mechanism_outputs.append(reflow_mechanism_logits.detach())
+        all_reflow_mechanism_targets.append(reflow_mechanism_targets.detach())
         all_param_risk_preds.append(param_risk_preds.detach())
         all_param_risk_targets.append(param_risk_targets.detach())
         
         # Print progress
         if (batch_idx + 1) % print_every == 0:
-            print(f"  Batch {batch_idx+1}/{len(train_loader)}: "
-                  f"Total={total_loss.item():.4f}, "
-                  f"Defect={defect_loss.item():.4f}, "
-                  f"Mech={mechanism_loss.item():.4f}, "
-                  f"Param={param_risk_loss.item():.4f}")
+            print(
+                f"  Batch {batch_idx+1}/{len(train_loader)} | "
+                f"Total={total_loss.item():.4f}, "
+                f"Defect={defect_loss.item():.4f}, "
+                f"Print={print_mechanism_loss.item():.4f}, "
+                f"Reflow={reflow_mechanism_loss.item():.4f}, "
+                f"Param={param_risk_loss.item():.4f}"
+            )
     
-    # Calculate epoch metrics
-    # weighted epoch average
+    # Epoch averages
     epoch_total_loss = running_total_loss / total_samples
     epoch_defect_loss = running_defect_loss / total_samples
-    epoch_mechanism_loss = running_mechanism_loss / total_samples
+    epoch_print_mechanism_loss = running_print_mechanism_loss / total_samples
+    epoch_reflow_mechanism_loss = running_reflow_mechanism_loss / total_samples
     epoch_param_risk_loss = running_param_risk_loss / total_samples
     
     # Defect metrics
     all_defect_outputs = torch.cat(all_defect_outputs)
     all_defect_targets = torch.cat(all_defect_targets)
     defect_f1 = calculate_f1_score(all_defect_outputs, all_defect_targets)
+    defect_acc = (torch.argmax(all_defect_outputs, dim=1) == all_defect_targets).float().mean().item()
 
-    defect_preds = torch.argmax(all_defect_outputs, dim=1)
-    defect_acc = (defect_preds == all_defect_targets).float().mean().item()
+    # Print mechanism metrics
+    all_print_mechanism_outputs = torch.cat(all_print_mechanism_outputs)
+    all_print_mechanism_targets = torch.cat(all_print_mechanism_targets)
+    print_mechanism_f1 = calculate_f1_score(all_print_mechanism_outputs, all_print_mechanism_targets)
+    print_mechanism_acc = (
+        torch.argmax(all_print_mechanism_outputs, dim=1) == all_print_mechanism_targets
+    ).float().mean().item()
 
-    # Mechanism metrics
-    all_mechanism_outputs = torch.cat(all_mechanism_outputs)
-    all_mechanism_targets = torch.cat(all_mechanism_targets)
-    mechanism_f1 = calculate_f1_score(all_mechanism_outputs, all_mechanism_targets)
-    
-    mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
-    mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
+    # Reflow mechanism metrics
+    all_reflow_mechanism_outputs = torch.cat(all_reflow_mechanism_outputs)
+    all_reflow_mechanism_targets = torch.cat(all_reflow_mechanism_targets)
+    reflow_mechanism_f1 = calculate_f1_score(all_reflow_mechanism_outputs, all_reflow_mechanism_targets)
+    reflow_mechanism_acc = (
+        torch.argmax(all_reflow_mechanism_outputs, dim=1) == all_reflow_mechanism_targets
+    ).float().mean().item()
 
     # Parameter risk metrics
-    all_param_risk_preds = torch.cat(all_param_risk_preds)  # (n_samples, 5)
-    all_param_risk_targets = torch.cat(all_param_risk_targets)  # (n_samples, 5)
-    
-    # Calculate MAE (Mean Absolute Error) for parameter risk
+    all_param_risk_preds = torch.cat(all_param_risk_preds)
+    all_param_risk_targets = torch.cat(all_param_risk_targets)
     param_risk_mae = torch.abs(all_param_risk_preds - all_param_risk_targets).mean().item()
     
-    # Calculate percentage of predictions within tolerance (e.g., ±0.1)
     tolerance = 0.1
-    within_tolerance = (torch.abs(all_param_risk_preds - all_param_risk_targets) < tolerance).float().mean().item()
+    within_tolerance = (
+        torch.abs(all_param_risk_preds - all_param_risk_targets) < tolerance
+    ).float().mean().item()
     
     elapsed_time = time.time() - start_time
     
-    metrics = {
+    return {
         'total_loss': epoch_total_loss,
         'defect_loss': epoch_defect_loss,
-        'mechanism_loss': epoch_mechanism_loss,
+        'print_mechanism_loss': epoch_print_mechanism_loss,
+        'reflow_mechanism_loss': epoch_reflow_mechanism_loss,
         'param_risk_loss': epoch_param_risk_loss,
         'defect_accuracy': defect_acc,
         'defect_f1': defect_f1,
-        'mechanism_accuracy': mechanism_acc,
-        'mechanism_f1': mechanism_f1,
+        'print_mechanism_accuracy': print_mechanism_acc,
+        'print_mechanism_f1': print_mechanism_f1,
+        'reflow_mechanism_accuracy': reflow_mechanism_acc,
+        'reflow_mechanism_f1': reflow_mechanism_f1,
         'param_risk_mae': param_risk_mae,
         'param_risk_within_tolerance': within_tolerance,
         'time': elapsed_time
     }
-    
-    return metrics
-
 
 # ============================================================================
 # VALIDATION EPOCH
@@ -469,7 +580,8 @@ def train_one_epoch(
 def validate(model: nn.Module,
             val_loader: DataLoader,
             defect_weights: torch.Tensor,
-            mechanism_weights: torch.Tensor,
+            print_mechanism_weights: torch.Tensor,
+            reflow_mechanism_weights: torch.Tensor,
             task_weights: dict,
             param_weights: dict,
             device: str) -> Dict[str, float]:
@@ -491,33 +603,37 @@ def validate(model: nn.Module,
     
     running_total_loss = 0.0
     running_defect_loss = 0.0
-    running_mechanism_loss = 0.0
+    running_print_mechanism_loss = 0.0
+    running_reflow_mechanism_loss = 0.0
     running_param_risk_loss = 0.0
     total_samples = 0
     
     all_defect_outputs = []
     all_defect_targets = []
-    all_mechanism_outputs = []
-    all_mechanism_targets = []
+    all_print_mechanism_outputs = []
+    all_print_mechanism_targets = []
+    all_reflow_mechanism_outputs = []
+    all_reflow_mechanism_targets = []
     all_param_risk_preds = []
     all_param_risk_targets = []
     
     with torch.no_grad():
-        for features, defect_targets, mechanism_targets, param_risk_targets in val_loader:
+        for features, defect_targets, print_mechanism_targets, reflow_mechanism_targets, param_risk_targets in val_loader:
             # Move to device
             features = features.to(device)
             defect_targets = defect_targets.to(device)
-            mechanism_targets = mechanism_targets.to(device)
+            print_mechanism_targets = print_mechanism_targets.to(device)
+            reflow_mechanism_targets = reflow_mechanism_targets.to(device)
             param_risk_targets = param_risk_targets.to(device)
             
             # Forward pass
-            defect_logits, mechanism_logits, param_risk_preds = model(features)
+            defect_logits, print_mechanism_logits, reflow_mechanism_logits, param_risk_preds = model(features)
 
             # Compute loss
-            total_loss, defect_loss, mechanism_loss, param_risk_loss = multitask_loss_v2(
-                defect_logits, mechanism_logits, param_risk_preds,
-                defect_targets, mechanism_targets, param_risk_targets,
-                defect_weights, mechanism_weights,
+            total_loss, defect_loss, print_mechanism_loss, reflow_mechanism_loss, param_risk_loss = multitask_loss_v3(
+                defect_logits, print_mechanism_logits, reflow_mechanism_logits, param_risk_preds,
+                defect_targets, print_mechanism_targets, reflow_mechanism_targets, param_risk_targets,
+                defect_weights, print_mechanism_weights, reflow_mechanism_weights,
                 task_weights, param_weights, device
             )
             
@@ -525,22 +641,26 @@ def validate(model: nn.Module,
             batch_size = features.size(0)
             running_total_loss += total_loss.item() * batch_size
             running_defect_loss += defect_loss.item() * batch_size
-            running_mechanism_loss += mechanism_loss.item() * batch_size
+            running_print_mechanism_loss += print_mechanism_loss.item() * batch_size
+            running_reflow_mechanism_loss += reflow_mechanism_loss.item() * batch_size
             running_param_risk_loss += param_risk_loss.item() * batch_size
             total_samples += batch_size
 
             # Store for metrics
             all_defect_outputs.append(defect_logits)
             all_defect_targets.append(defect_targets)
-            all_mechanism_outputs.append(mechanism_logits)
-            all_mechanism_targets.append(mechanism_targets)
+            all_print_mechanism_outputs.append(print_mechanism_logits)
+            all_reflow_mechanism_outputs.append(reflow_mechanism_logits)
+            all_print_mechanism_targets.append(print_mechanism_targets)
+            all_reflow_mechanism_targets.append(reflow_mechanism_targets)
             all_param_risk_preds.append(param_risk_preds)
             all_param_risk_targets.append(param_risk_targets)
     
     # Calculate metrics
     val_total_loss = running_total_loss / total_samples
     val_defect_loss = running_defect_loss / total_samples
-    val_mechanism_loss = running_mechanism_loss / total_samples
+    val_print_mechanism_loss = running_print_mechanism_loss / total_samples
+    val_reflow_mechanism_loss = running_reflow_mechanism_loss / total_samples
     val_param_risk_loss = running_param_risk_loss / total_samples
 
     # Defect metrics
@@ -551,13 +671,26 @@ def validate(model: nn.Module,
     defect_preds = torch.argmax(all_defect_outputs, dim=1)
     defect_acc = (defect_preds == all_defect_targets).float().mean().item()
     
-    # Mechanism metrics
-    all_mechanism_outputs = torch.cat(all_mechanism_outputs)
-    all_mechanism_targets = torch.cat(all_mechanism_targets)
-    mechanism_f1 = calculate_f1_score(all_mechanism_outputs, all_mechanism_targets)
+    # Print Mechanism metrics
+    all_print_mechanism_outputs = torch.cat(all_print_mechanism_outputs)
+    all_print_mechanism_targets = torch.cat(all_print_mechanism_targets)
+    print_mechanism_f1 = calculate_f1_score(all_print_mechanism_outputs, all_print_mechanism_targets)
     
-    mechanism_preds = torch.argmax(all_mechanism_outputs, dim=1)
-    mechanism_acc = (mechanism_preds == all_mechanism_targets).float().mean().item()
+    print_mechanism_preds = torch.argmax(all_print_mechanism_outputs, dim=1)
+    print_mechanism_acc = (print_mechanism_preds == all_print_mechanism_targets).float().mean().item()
+
+    # Reflow Mechanism metrics
+    all_reflow_mechanism_outputs = torch.cat(all_reflow_mechanism_outputs)
+    all_reflow_mechanism_targets = torch.cat(all_reflow_mechanism_targets)
+    reflow_mechanism_f1 = calculate_f1_score(
+        all_reflow_mechanism_outputs,
+        all_reflow_mechanism_targets
+    )
+
+    reflow_mechanism_preds = torch.argmax(all_reflow_mechanism_outputs, dim=1)
+    reflow_mechanism_acc = (
+        reflow_mechanism_preds == all_reflow_mechanism_targets
+    ).float().mean().item()
 
     # Parameter risk metrics (NEW)
     all_param_risk_preds = torch.cat(all_param_risk_preds)
@@ -571,12 +704,15 @@ def validate(model: nn.Module,
     metrics = {
         'total_loss': val_total_loss,
         'defect_loss': val_defect_loss,
-        'mechanism_loss': val_mechanism_loss,
+        'print_mechanism_loss': val_print_mechanism_loss,
+        'reflow_mechanism_loss': val_reflow_mechanism_loss,
         'param_risk_loss': val_param_risk_loss,
         'defect_accuracy': defect_acc,
         'defect_f1': defect_f1,
-        'mechanism_accuracy': mechanism_acc,
-        'mechanism_f1': mechanism_f1,
+        'print_mechanism_accuracy': print_mechanism_acc,
+        'print_mechanism_f1': print_mechanism_f1,
+        'reflow_mechanism_accuracy': reflow_mechanism_acc,
+        'reflow_mechanism_f1': reflow_mechanism_f1,
         'param_risk_mae': param_risk_mae,
         'param_risk_within_tolerance': within_tolerance
     }
@@ -649,7 +785,8 @@ class EarlyStopping:
 def train_model(model: nn.Module,
                dataloaders: Dict[str, DataLoader],
                defect_weights: Optional[torch.Tensor] = None,
-               mechanism_weights: Optional[torch.Tensor] = None,
+               print_mechanism_weights: Optional[torch.Tensor] = None,
+               reflow_mechanism_weights: Optional[torch.Tensor] = None,
                config: Optional[TrainingConfig] = None,
                task_weights: dict = None,
                param_weights: torch.Tensor = None,
@@ -695,14 +832,24 @@ def train_model(model: nn.Module,
         defect_weights = torch.ones(3).to(device)
         print(f"\nNo defect weights (uniform)")
     
-    if mechanism_weights is not None:
-        mechanism_weights = mechanism_weights.to(device)
-        print(f"Mechanism class weights: {mechanism_weights.cpu().numpy()}")
+    if print_mechanism_weights is not None:
+        print_mechanism_weights = print_mechanism_weights.to(device)
+        print(f"Print Stage Mechanism class weights: {print_mechanism_weights.cpu().numpy()}")
     else:
-        mechanism_weights = torch.ones(3).to(device)
-        print(f"No mechanism weights (uniform)")
+        print_mechanism_weights = torch.ones(3).to(device)
+        print(f"No print stage mechanism weights (uniform)")
     
-    print(f"\nTask weights: defect={task_weights['defect']}, mechanism={task_weights['mechanism']}")
+    if reflow_mechanism_weights is not None:
+        reflow_mechanism_weights = reflow_mechanism_weights.to(device)
+        print(f"Reflow Stage Mechanism class weights: {reflow_mechanism_weights.cpu().numpy()}")
+    else:
+        reflow_mechanism_weights = torch.ones(3).to(device)
+        print(f"No reflow stage mechanism weights (uniform)")
+    
+    print(f'''\nTask weights: defect={task_weights['defect']}, 
+          print_mechanism={task_weights['print_mechanism']}, 
+          reflow_mechanism={task_weights['reflow_mechanism']}'''
+    )
     
     # Setup optimizer
     if config.optimizer_type == 'adam':
@@ -734,22 +881,28 @@ def train_model(model: nn.Module,
     history = {
         'train_total_loss': [],
         'train_defect_loss': [],
-        'train_mechanism_loss': [],
+        'train_print_mechanism_loss': [],
+        'train_reflow_mechanism_loss': [],
         'train_param_risk_loss': [],
         'train_defect_acc': [],
         'train_defect_f1': [],
-        'train_mechanism_acc': [],
-        'train_mechanism_f1': [],
+        'train_print_mechanism_acc': [],
+        'train_reflow_mechanism_acc': [],
+        'train_print_mechanism_f1': [],
+        'train_reflow_mechanism_f1': [],
         'train_param_risk_mae': [],
         'train_param_risk_tolerance': [],
         'val_total_loss': [],
         'val_defect_loss': [],
-        'val_mechanism_loss': [],
+        'val_print_mechanism_loss': [],
+        'val_reflow_mechanism_loss': [],
         'val_param_risk_loss': [],
         'val_defect_acc': [],
         'val_defect_f1': [],
-        'val_mechanism_acc': [],
-        'val_mechanism_f1': [],
+        'val_print_mechanism_acc': [],
+        'val_reflow_mechanism_acc': [],
+        'val_print_mechanism_f1': [],
+        'val_reflow_mechanism_f1': [],
         'val_param_risk_mae': [],
         'val_param_risk_tolerance': [],
         'lr': []
@@ -772,7 +925,8 @@ def train_model(model: nn.Module,
             dataloaders['train'],
             optimizer,
             defect_weights,
-            mechanism_weights,
+            print_mechanism_weights,
+            reflow_mechanism_weights,
             task_weights,
             param_weights,
             device,
@@ -782,11 +936,13 @@ def train_model(model: nn.Module,
         
         print(f"\nTrain: Total={train_metrics['total_loss']:.4f}, "
               f"Defect={train_metrics['defect_loss']:.4f}, "
-              f"Mech={train_metrics['mechanism_loss']:.4f}, "
+              f"Printing Mech={train_metrics['print_mechanism_loss']:.4f}, "
+              f"Reflow Mech={train_metrics['reflow_mechanism_loss']:.4f}, "
               f"Param={train_metrics['param_risk_loss']:.4f}, "
               f"Time={train_metrics['time']:.1f}s")
-        print(f"       Defect F1={train_metrics['defect_f1']:.4f}, "
-              f"Mech F1={train_metrics['mechanism_f1']:.4f}, "
+        print(f"Defect F1={train_metrics['defect_f1']:.4f}, "
+              f"Printing Mech F1={train_metrics['print_mechanism_f1']:.4f}, "
+              f"Reflow Mech F1={train_metrics['reflow_mechanism_f1']:.4f}, "
               f"Param MAE={train_metrics['param_risk_mae']:.4f}")
         
         # Validate
@@ -794,7 +950,8 @@ def train_model(model: nn.Module,
             model,
             dataloaders['val'],
             defect_weights,
-            mechanism_weights,
+            print_mechanism_weights,
+            reflow_mechanism_weights,
             task_weights,
             param_weights,
             device
@@ -802,10 +959,12 @@ def train_model(model: nn.Module,
         
         print(f"Val:   Total={val_metrics['total_loss']:.4f}, "
               f"Defect={val_metrics['defect_loss']:.4f}, "
-              f"Mech={val_metrics['mechanism_loss']:.4f}, "
+              f"Printing Mech={val_metrics['print_mechanism_loss']:.4f}, "
+              f"Reflow Mech={val_metrics['reflow_mechanism_loss']:.4f}, "
               f"Param={val_metrics['param_risk_loss']:.4f}")
-        print(f"       Defect F1={val_metrics['defect_f1']:.4f}, "
-              f"Mech F1={val_metrics['mechanism_f1']:.4f}, "
+        print(f"Defect F1={val_metrics['defect_f1']:.4f}, "
+              f"Printing Mech F1={val_metrics['print_mechanism_f1']:.4f}, "
+              f"Reflow Mech F1={val_metrics['reflow_mechanism_f1']:.4f}, "
               f"Param MAE={val_metrics['param_risk_mae']:.4f}")
         
         # Update learning rate
@@ -819,22 +978,28 @@ def train_model(model: nn.Module,
         # Save history
         history['train_total_loss'].append(train_metrics['total_loss'])
         history['train_defect_loss'].append(train_metrics['defect_loss'])
-        history['train_mechanism_loss'].append(train_metrics['mechanism_loss'])
+        history['train_print_mechanism_loss'].append(train_metrics['print_mechanism_loss'])
+        history['train_reflow_mechanism_loss'].append(train_metrics['reflow_mechanism_loss'])
         history['train_defect_acc'].append(train_metrics['defect_accuracy'])
         history['train_defect_f1'].append(train_metrics['defect_f1'])
-        history['train_mechanism_acc'].append(train_metrics['mechanism_accuracy'])
-        history['train_mechanism_f1'].append(train_metrics['mechanism_f1'])
+        history['train_print_mechanism_acc'].append(train_metrics['print_mechanism_accuracy'])
+        history['train_print_mechanism_f1'].append(train_metrics['reflow_mechanism_f1'])
+        history['train_reflow_mechanism_acc'].append(train_metrics['print_mechanism_accuracy'])
+        history['train_reflow_mechanism_f1'].append(train_metrics['reflow_mechanism_f1'])
         history['train_param_risk_loss'].append(train_metrics['param_risk_loss'])
         history['train_param_risk_mae'].append(train_metrics['param_risk_mae'])
         history['train_param_risk_tolerance'].append(train_metrics['param_risk_within_tolerance'])
         
         history['val_total_loss'].append(val_metrics['total_loss'])
         history['val_defect_loss'].append(val_metrics['defect_loss'])
-        history['val_mechanism_loss'].append(val_metrics['mechanism_loss'])
+        history['val_print_mechanism_loss'].append(val_metrics['print_mechanism_loss'])
+        history['val_reflow_mechanism_loss'].append(val_metrics['reflow_mechanism_loss'])
         history['val_defect_acc'].append(val_metrics['defect_accuracy'])
         history['val_defect_f1'].append(val_metrics['defect_f1'])
-        history['val_mechanism_acc'].append(val_metrics['mechanism_accuracy'])
-        history['val_mechanism_f1'].append(val_metrics['mechanism_f1'])
+        history['val_print_mechanism_acc'].append(val_metrics['print_mechanism_accuracy'])
+        history['val_print_mechanism_f1'].append(val_metrics['print_mechanism_f1'])
+        history['val_reflow_mechanism_acc'].append(val_metrics['reflow_mechanism_accuracy'])
+        history['val_reflow_mechanism_f1'].append(val_metrics['reflow_mechanism_f1'])
         history['val_param_risk_loss'].append(val_metrics['param_risk_loss'])
         history['val_param_risk_mae'].append(val_metrics['param_risk_mae'])
         history['val_param_risk_tolerance'].append(val_metrics['param_risk_within_tolerance'])
@@ -851,7 +1016,8 @@ def train_model(model: nn.Module,
                     'optimizer_state_dict': optimizer.state_dict(),
                     'val_total_loss': val_metrics['total_loss'],
                     'val_defect_f1': val_metrics['defect_f1'],
-                    'val_mechanism_f1': val_metrics['mechanism_f1'],
+                    'val_print_mechanism_f1': val_metrics['print_mechanism_f1'],
+                    'val_reflow_mechanism_f1': val_metrics['reflow_mechanism_f1'],
                     'config': config.to_dict()
                 }, save_path)
                 print(f"✓ Saved best model (val_total_loss={val_metrics['total_loss']:.4f})")
