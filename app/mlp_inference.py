@@ -39,7 +39,13 @@ def load_model(model_path: str, preprocessing_path: str, device: str = 'cpu'):
     # Load model
     from app.model import create_model
     
-    model = create_model('full_multitask', input_dim=len(feature_names))
+    model = create_model(
+        'full_multitask_multistage', 
+        input_dim = len(artifacts['feature_info']['all_features']), 
+        num_defect_classes = 3, 
+        num_mechanism_stages_classes={'print': 3, 'reflow': 3},
+        num_parameters = len(artifacts['feature_info']['raw'])
+    )
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
@@ -64,7 +70,9 @@ def prepare_features(board_params: Dict, scaler, feature_names) -> np.ndarray:
                 'stencil_thickness': 0.100,
                 'paste_viscosity': 200.0,
                 'ambient_rh': 40.0,
-                'ambient_temperature': 23.0
+                'ambient_temperature': 23.0,
+                'peak_reflow_temperature': 255,
+                'time_above_liquidus': 60
             }
         scaler: Fitted StandardScaler
         feature_names: List of feature names
@@ -183,36 +191,76 @@ def predict(model, features: np.ndarray, board_params: Dict,
     """
     # Convert to tensor
     features_tensor = torch.from_numpy(features).float().to(device)
-    
+
     with torch.no_grad():
-        # Forward pass
-        defect_logits, mechanism_logits, param_risk_scores = model(features_tensor)
-        
+        # Forward pass (v3 signature)
+        (
+            defect_logits,
+            print_mechanism_logits,
+            reflow_mechanism_logits,
+            param_risk_scores
+        ) = model(features_tensor)
+
+        # --------------------------------------------------
         # Defect predictions
+        # --------------------------------------------------
         defect_probs = torch.softmax(defect_logits, dim=1)[0]
         defect_pred = torch.argmax(defect_probs).item()
         defect_conf = defect_probs[defect_pred].item()
-        
-        # Mechanism predictions
-        mech_probs = torch.softmax(mechanism_logits, dim=1)[0]
-        mech_pred = torch.argmax(mech_probs).item()
-        mech_conf = mech_probs[mech_pred].item()
 
-        # Parameter risk scores (already sigmoid in model)
-        param_risks = param_risk_scores[0].cpu().numpy()  # (5,)
+        # --------------------------------------------------
+        # Printing mechanism predictions
+        # --------------------------------------------------
+        print_mech_probs = torch.softmax(print_mechanism_logits, dim=1)[0]
+        print_mech_pred = torch.argmax(print_mech_probs).item()
+        print_mech_conf = print_mech_probs[print_mech_pred].item()
+
+        # --------------------------------------------------
+        # Reflow mechanism predictions
+        # --------------------------------------------------
+        reflow_mech_probs = torch.softmax(reflow_mechanism_logits, dim=1)[0]
+        reflow_mech_pred = torch.argmax(reflow_mech_probs).item()
+        reflow_mech_conf = reflow_mech_probs[reflow_mech_pred].item()
+
+        # --------------------------------------------------
+        # Parameter risk scores (already sigmoid-ed)
+        # --------------------------------------------------
+        param_risks = param_risk_scores[0].cpu().numpy()
     
-    # Format results
-    defect_classes = ['No Defect', 'Open Circuit', 'Solder Bridging']
-    mechanism_classes = ['Aperture Overfill', 'No Mechanism', 'Poor paste transfer']
+    # ------------------------------------------------------------------
+    # Class mappings (must match label encoders)
+    # ------------------------------------------------------------------
+    defect_classes = [
+        'No Defect',
+        'Open Circuit',
+        'Solder Bridging'
+    ]
 
-    # Extract parameter directions
+    printing_mechanism_classes = [
+        'aperture overfill',
+        'no printing mech',
+        'poor paste transfer'
+    ]
+
+    reflow_mechanism_classes = [
+        'excess reflow spreading',
+        'no reflow mech',
+        'non coalescence'
+    ]
+
+    # ------------------------------------------------------------------
+    # Extract parameter directions & statuses
+    # ------------------------------------------------------------------
     param_details = extract_parameter_directions(
         param_risks,
         board_params,
         process_parameters,
         risk_threshold=0.60
     )
-    
+
+    # ------------------------------------------------------------------
+    # Final structured result
+    # ------------------------------------------------------------------
     result = {
         'defect': {
             'class': defect_classes[defect_pred],
@@ -220,22 +268,37 @@ def predict(model, features: np.ndarray, board_params: Dict,
             'confidence': float(defect_conf),
             'probabilities': {
                 defect_classes[i]: float(defect_probs[i])
-                for i in range(3)
+                for i in range(len(defect_classes))
             },
             'source': 'MLP',
             'description': get_defect_description(defect_pred)
         },
-        'mechanism': {
-            'class': mechanism_classes[mech_pred],
-            'label': mech_pred,
-            'confidence': float(mech_conf),
+
+        'printing_mechanism': {
+            'class': printing_mechanism_classes[print_mech_pred],
+            'label': print_mech_pred,
+            'confidence': float(print_mech_conf),
             'probabilities': {
-                mechanism_classes[i]: float(mech_probs[i])
-                for i in range(3)
+                printing_mechanism_classes[i]: float(print_mech_probs[i])
+                for i in range(len(printing_mechanism_classes))
             },
             'source': 'MLP',
-            'description': get_mechanism_description(mech_pred)
+            'description': get_mechanism_description(print_mech_pred)
         },
+
+        'reflow_mechanism': {
+            'class': reflow_mechanism_classes[reflow_mech_pred],
+            'label': reflow_mech_pred,
+            'confidence': float(reflow_mech_conf),
+            'probabilities': {
+                reflow_mechanism_classes[i]: float(reflow_mech_probs[i])
+                for i in range(len(reflow_mechanism_classes))
+            },
+            'source': 'MLP',
+            'description': get_mechanism_description(reflow_mech_pred)
+        },
+
         'parameters': param_details
     }
+
     return result

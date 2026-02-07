@@ -33,6 +33,20 @@ PARAMETER_SPECS = {
         'usl': 26.0,
         'lsl': 20.0,
         'unit': '°C'
+    },
+    "peak_reflow_temperature": {
+        "nominal": 255,
+        "tolerance": 5,
+        "usl": 260,
+        "lsl": 250,
+        "unit": '°C'
+    },
+    "time_above_liquidus": {
+        "nominal": 60,
+        "tolerance": 15,
+        "usl": 75,
+        "lsl": 45,
+        "unit": 's'
     }
 }
 
@@ -41,7 +55,9 @@ parameter_column_map = {
     'stencil_thickness': 'Stencil thickness',
     'paste_viscosity': 'Paste viscosity',
     'ambient_rh': 'Ambient RH',
-    'ambient_temperature': 'Ambient temperature'
+    'ambient_temperature': 'Ambient temperature',
+    'peak_reflow_temperature': 'Peak reflow temperature',
+    'time_above_liquidus': 'Time above liquidus'
 }
 
 # model constants

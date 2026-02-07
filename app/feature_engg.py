@@ -55,6 +55,18 @@ def compute_z_scores(df: pd.DataFrame) -> pd.DataFrame:
         (df['paste_viscosity'] - PARAMETER_SPECS['paste_viscosity']['nominal']) / 
         PARAMETER_SPECS['paste_viscosity']['tolerance']
     )
+
+    # Peak Reflow Temperature z-score
+    df['z_peak_reflow_temperature'] = (
+        (df['peak_reflow_temperature'] - PARAMETER_SPECS['peak_reflow_temperature']['nominal']) / 
+        PARAMETER_SPECS['peak_reflow_temperature']['tolerance']
+    )
+
+    # Time above liquidus z-score
+    df['z_time_above_liquidus'] = (
+        (df['time_above_liquidus'] - PARAMETER_SPECS['time_above_liquidus']['nominal']) / 
+        PARAMETER_SPECS['time_above_liquidus']['tolerance']
+    )
     
     return df
 
@@ -101,6 +113,22 @@ def compute_limit_distances(df: pd.DataFrame) -> pd.DataFrame:
     df['dist_to_lsl_temp'] = (
         PARAMETER_SPECS['ambient_temperature']['lsl'] - df['ambient_temperature']
     )
+
+    #Peak reflow temperature distances
+    df['dist_to_usl_prt'] = (
+        df['peak_reflow_temperature'] - PARAMETER_SPECS['peak_reflow_temperature']['usl']
+    )
+    df['dist_to_lsl_prt'] = (
+        PARAMETER_SPECS['peak_reflow_temperature']['lsl'] - df['peak_reflow_temperature']
+    )
+
+    #Time above liquidus distances
+    df['dist_to_usl_tal'] = (
+        df['time_above_liquidus'] - PARAMETER_SPECS['time_above_liquidus']['usl']
+    )
+    df['dist_to_lsl_tal'] = (
+        PARAMETER_SPECS['time_above_liquidus']['lsl'] - df['time_above_liquidus']
+    )
     
     return df
 
@@ -114,11 +142,13 @@ def engineer_all_features(df: pd.DataFrame) -> pd.DataFrame:
     - paste_viscosity
     - ambient_rh
     - ambient_temperature
+    - peak_reflow_temperature
+    - time_above_liquidus
     
     Output columns added:
-    - 3 z-scores
-    - 6 limit distances
-    Total: 9 engineered features
+    - 5 z-scores
+    - 10 limit distances
+    Total: 15 engineered features
     
     Args:
         df: DataFrame with raw parameters
@@ -152,13 +182,17 @@ def get_feature_columns() -> Dict[str, list]:
         'stencil_thickness',
         'paste_viscosity',
         'ambient_rh',
-        'ambient_temperature'
+        'ambient_temperature',
+        'peak_reflow_temperature',
+        'time_above_liquidus'
     ]
     
     z_score_features = [
         'z_paste_volume',
         'z_ambient_rh',
-        'z_paste_viscosity'
+        'z_paste_viscosity',
+        'z_peak_reflow_temperature',
+        'z_time_above_liquidus'
     ]
     
     distance_features = [
@@ -167,7 +201,11 @@ def get_feature_columns() -> Dict[str, list]:
         'dist_to_usl_rh',
         'dist_to_lsl_rh',
         'dist_to_usl_temp',
-        'dist_to_lsl_temp'
+        'dist_to_lsl_temp',
+        'dist_to_usl_prt',
+        'dist_to_lsl_prt',
+        'dist_to_usl_tal',
+        'dist_to_lsl_tal'
     ]
 
     all_engineered = z_score_features + distance_features
@@ -266,51 +304,51 @@ def validate_features(df: pd.DataFrame) -> Dict[str, any]:
     
     return validation_results
 
-if __name__ == "__main__":
-    # Example: Create sample data
+# if __name__ == "__main__":
+#     # Example: Create sample data
 
-    sample_data = pd.read_csv("./training_data_200k.csv")
+#     sample_data = pd.read_csv("./training_data_200k.csv")
     
-    # Engineer features
-    df_engineered = engineer_all_features(sample_data)
-    df_engineered = label_mechanisms(df_engineered)
+#     # Engineer features
+#     df_engineered = engineer_all_features(sample_data)
+#     df_engineered = label_mechanisms(df_engineered)
     
-    print(f"\nInput shape: {sample_data.shape}")
-    print(f"Output shape: {df_engineered.shape}")
+#     print(f"\nInput shape: {sample_data.shape}")
+#     print(f"Output shape: {df_engineered.shape}")
     
-    # Validate
-    print("\n" + "="*60)
-    print("VALIDATION")
-    print("="*60)
+#     # Validate
+#     print("\n" + "="*60)
+#     print("VALIDATION")
+#     print("="*60)
     
-    validation = validate_features(df_engineered)
-    validate_mechanism_labels(df_engineered)
-    print(f"\nPassed: {validation['passed']}")
+#     validation = validate_features(df_engineered)
+#     validate_mechanism_labels(df_engineered)
+#     print(f"\nPassed: {validation['passed']}")
     
-    if validation['issues']:
-        print("\nIssues:")
-        for issue in validation['issues']:
-            print(f"  ❌ {issue}")
+#     if validation['issues']:
+#         print("\nIssues:")
+#         for issue in validation['issues']:
+#             print(f"  ❌ {issue}")
     
-    if validation['warnings']:
-        print("\nWarnings:")
-        for warning in validation['warnings']:
-            print(f"  ⚠️  {warning}")
+#     if validation['warnings']:
+#         print("\nWarnings:")
+#         for warning in validation['warnings']:
+#             print(f"  ⚠️  {warning}")
     
-    print(f"\nStatistics:")
-    print(f"  Samples: {validation['statistics']['n_samples']}")
-    print(f"  Features: {validation['statistics']['n_features']}")
+#     print(f"\nStatistics:")
+#     print(f"  Samples: {validation['statistics']['n_samples']}")
+#     print(f"  Features: {validation['statistics']['n_features']}")
     
-    # Prepare for model
-    print("\n" + "="*60)
-    print("MODEL INPUT PREPARATION")
-    print("="*60)
+#     # Prepare for model
+#     print("\n" + "="*60)
+#     print("MODEL INPUT PREPARATION")
+#     print("="*60)
     
-    features, feature_info = prepare_features_for_model(sample_data)
+#     features, feature_info = prepare_features_for_model(sample_data)
     
-    print(f"\nFeature array shape: {features.shape}")
-    print(f"Feature array dtype: {features.dtype}")
-    print(f"\nFirst sample (first 5 features):")
-    print(features[0, :5])
+#     print(f"\nFeature array shape: {features.shape}")
+#     print(f"Feature array dtype: {features.dtype}")
+#     print(f"\nFirst sample (first 5 features):")
+#     print(features[0, :5])
     
-    print("\n✓ Feature engineering pipeline ready!")
+#     print("\n✓ Feature engineering pipeline ready!")

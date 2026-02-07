@@ -1,7 +1,7 @@
 import pandas as pd
 from pymongo import MongoClient
 from datetime import datetime, timezone
-from .constants import DB, COL, MONGO_URI
+from .constants import DB, COL, MONGO_URI, parameter_column_map
 
 # -----------------------------
 # CONFIG
@@ -45,11 +45,7 @@ for _, row in df.iterrows():
         "board_number": int(row["board_number"]),
 
         "parameters": {
-            "paste_volume": float(row["Paste volume per aperture"]),
-            "stencil_thickness": float(row["Stencil thickness"]),
-            "paste_viscosity": float(row["Paste viscosity"]),
-            "ambient_rh": float(row["Ambient RH"]),
-            "ambient_temperature": float(row["Ambient temperature"])
+            k: float(row[v]) for k,v in parameter_column_map.items()
         },
         "parameter_violations": parameter_violations,
         "labels": {

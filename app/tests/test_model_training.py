@@ -51,18 +51,18 @@ def run_training(data, dataloaders):
         4.0,  # paste_viscosity
         5.0,  # ambient_rh
         3.0,  # ambient_temperature
-        1.0,  # peak_reflow_temperature
-        1.0,  # time_above_liquidus
+        5.0,  # peak_reflow_temperature
+        5.0,  # time_above_liquidus
     ])
 
     print("\nCreating model...")
     # Create multi-task model
     model = create_model(
         'full_multitask_multistage', 
-        input_dim=14, 
-        num_defect_classes=3, 
+        input_dim = len(data['feature_info']['all_features']), 
+        num_defect_classes = 3, 
         num_mechanism_stages_classes={'print': 3, 'reflow': 3},
-        num_parameters=7
+        num_parameters = len(data['feature_info']['raw'])
     )
 
     # Print summary
@@ -75,7 +75,7 @@ def run_training(data, dataloaders):
     task_weights = {
         "defect": 0.8,
         "print_mechanism": 0.8,
-        "reflow_mechanism": 0.8,
+        "reflow_mechanism": 1.0, # since occurances are less
         'param_risk': 1.5
     }
 

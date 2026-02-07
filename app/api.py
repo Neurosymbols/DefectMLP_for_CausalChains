@@ -20,6 +20,8 @@ class PredictRequest(BaseModel):
     paste_viscosity: float
     ambient_rh: float
     ambient_temperature: float
+    peak_reflow_temperature: float
+    time_above_liquidus: float
     
     @field_validator('*')
     @classmethod
