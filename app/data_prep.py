@@ -367,6 +367,9 @@ def prepare_data_for_training(data_source: str,
     X_train = df_train[feature_info['all_features']].values #train_n x f
     X_val = df_val[feature_info['all_features']].values #val_n x f
     X_test = df_test[feature_info['all_features']].values #test_n x f
+    # df_test[df_test['batch_id'] == 7][
+    # ['board_id', 'batch_id', 'board_number'] + feature_info['raw']
+    # ].to_csv("./test_data.csv", index=False)
     
     print(f"X_train shape: {X_train.shape}")
     print(f"X_val shape:   {X_val.shape}")

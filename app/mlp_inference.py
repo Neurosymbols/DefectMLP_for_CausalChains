@@ -103,8 +103,7 @@ def prepare_features(board_params: Dict, scaler, feature_names) -> np.ndarray:
 
 def extract_parameter_directions(param_risk_scores: np.ndarray,
                                  board_params: Dict,
-                                 process_parameters: Dict,
-                                 risk_threshold: float = 0.70) -> Dict:
+                                 process_parameters: Dict) -> Dict:
     """
     Extract parameter violation directions from risk scores
     
@@ -131,17 +130,11 @@ def extract_parameter_directions(param_risk_scores: np.ndarray,
         lsl = param_info['lsl']
         
         # Determine direction and status
-        if risk_score > risk_threshold:
-            # High risk - determine direction from actual value
-            if actual_value > nominal:
-                direction = 'High'
-                status = f'High risk (approaching/exceeding USL={usl})'
-            else:
-                direction = 'Low'
-                status = f'High risk (approaching/below LSL={lsl})'
+        # High risk - determine direction from actual value
+        if actual_value > nominal:
+            direction = 'High'
         else:
-            direction = 'Safe'
-            status = 'Within safe limits'
+            direction = 'Low'
         
         param_results[param_name] = {
             'risk_score': risk_score,
@@ -149,9 +142,7 @@ def extract_parameter_directions(param_risk_scores: np.ndarray,
             'nominal': nominal,
             'usl': usl,
             'lsl': lsl,
-            'direction': direction,
-            'status': status,
-            'high_risk': risk_score > risk_threshold
+            'direction': direction
         }
     
     return param_results
@@ -160,8 +151,12 @@ def extract_parameter_directions(param_risk_scores: np.ndarray,
 # STEP 4: PREDICT (UPDATED)
 # ============================================================================
 
-def predict(model, features: np.ndarray, board_params: Dict, 
-            process_parameters: Dict, device: str = 'cpu') -> Dict:
+def predict(model, 
+            features: np.ndarray, 
+            board_params: Dict, 
+            process_parameters: Dict, 
+            device: str = 'cpu'
+        ) -> Dict:
     """
     Predict defect, mechanism, and parameter risks for a board
     
@@ -254,8 +249,7 @@ def predict(model, features: np.ndarray, board_params: Dict,
     param_details = extract_parameter_directions(
         param_risks,
         board_params,
-        process_parameters,
-        risk_threshold=0.60
+        process_parameters
     )
 
     # ------------------------------------------------------------------
@@ -298,7 +292,15 @@ def predict(model, features: np.ndarray, board_params: Dict,
             'description': get_mechanism_description(reflow_mech_pred)
         },
 
-        'parameters': param_details
+        'parameters': param_details,
+        'model_metadata': {
+            "type": "full_multitask_multistage",
+            "version": 2.0,
+            "total_features": model.input_dim,
+            "defect_classes": model.num_defect_classes,
+            "mechanism_classes": model.num_print_mechanism_classes + model.num_reflow_mechanism_classes,
+            "raw_features": model.num_parameters
+        }
     }
 
     return result
