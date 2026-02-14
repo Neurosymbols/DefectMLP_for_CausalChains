@@ -59,43 +59,43 @@ def get_multitask_predictions(model: nn.Module,
     all_defect_true = []
     all_defect_pred = []
     all_defect_proba = []
-    all_mechanism_true = []
-    all_mechanism_pred = []
-    all_mechanism_proba = []
+    # all_mechanism_true = []
+    # all_mechanism_pred = []
+    # all_mechanism_proba = []
 
     print("Generating predictions...")
     
     with torch.no_grad():
-        for features, defect_targets, mechanism_targets in dataloader:
+        for features, defect_targets, print_mechanism_targets, reflow_mechanism_targets, param_risk_targets in dataloader:
             features = features.to(device)
             
             # Forward pass (multi-task)
-            defect_logits, mechanism_logits = model(features)
+            defect_logits, print_mechanism_logits, reflow_mechanism_logits, param_risk_preds = model(features)
             
             # Defect predictions
             defect_probs = torch.softmax(defect_logits, dim=1)
             defect_preds = torch.argmax(defect_probs, dim=1)
             
             # Mechanism predictions
-            mechanism_probs = torch.sigmoid(mechanism_logits).squeeze()
-            mechanism_preds = (mechanism_probs > 0.5).float()
+            # mechanism_probs = torch.sigmoid(mechanism_logits).squeeze()
+            # mechanism_preds = (mechanism_probs > 0.5).float()
             
             # Store
             all_defect_true.append(defect_targets.cpu().numpy())
             all_defect_pred.append(defect_preds.cpu().numpy())
             all_defect_proba.append(defect_probs.cpu().numpy())
-            all_mechanism_true.append(mechanism_targets.cpu().numpy())
-            all_mechanism_pred.append(mechanism_preds.cpu().numpy())
-            all_mechanism_proba.append(mechanism_probs.cpu().numpy())
+            # all_mechanism_true.append(mechanism_targets.cpu().numpy())
+            # all_mechanism_pred.append(mechanism_preds.cpu().numpy())
+            # all_mechanism_proba.append(mechanism_probs.cpu().numpy())
     
     # Concatenate all batches
     predictions = {
         'defect_true': np.concatenate(all_defect_true),
         'defect_pred': np.concatenate(all_defect_pred),
         'defect_proba': np.concatenate(all_defect_proba),
-        'mechanism_true': np.concatenate(all_mechanism_true),
-        'mechanism_pred': np.concatenate(all_mechanism_pred),
-        'mechanism_proba': np.concatenate(all_mechanism_proba)
+        # 'mechanism_true': np.concatenate(all_mechanism_true),
+        # 'mechanism_pred': np.concatenate(all_mechanism_pred),
+        # 'mechanism_proba': np.concatenate(all_mechanism_proba)
     }
     
     print(f"✓ Generated predictions for {len(predictions['defect_true'])} samples")
@@ -122,17 +122,17 @@ def calculate_overall_metrics(predictions: Dict[str, np.ndarray]) -> Dict[str, f
     
     defect_f1 = defect_metrics['weighted_avg']['f1_score']
     
-    # Mechanism metrics
-    mech_metrics = calculate_mechanism_metrics(
-        predictions['mechanism_true'],
-        predictions['mechanism_pred']
-    )
+    # # Mechanism metrics
+    # mech_metrics = calculate_mechanism_metrics(
+    #     predictions['mechanism_true'],
+    #     predictions['mechanism_pred']
+    # )
     
     metrics = {
         'defect_accuracy': float(defect_accuracy),
         'defect_f1': float(defect_f1),
-        'mechanism_accuracy': float(mech_metrics['Accuracy']),
-        'mechanism_f1': float(mech_metrics['F1-Score'])
+        # 'mechanism_accuracy': float(mech_metrics['Accuracy']),
+        # 'mechanism_f1': float(mech_metrics['F1-Score'])
     }
     
     return metrics
@@ -152,9 +152,9 @@ def print_overall_metrics(metrics: Dict[str, float]):
     print(f"  Accuracy: {metrics['defect_accuracy']:.4f} ({metrics['defect_accuracy']*100:.2f}%)")
     print(f"  F1-Score: {metrics['defect_f1']:.4f}")
     
-    print("\nMECHANISM PREDICTION:")
-    print(f"  Accuracy: {metrics['mechanism_accuracy']:.4f} ({metrics['mechanism_accuracy']*100:.2f}%)")
-    print(f"  F1-Score: {metrics['mechanism_f1']:.4f}")
+    # print("\nMECHANISM PREDICTION:")
+    # print(f"  Accuracy: {metrics['mechanism_accuracy']:.4f} ({metrics['mechanism_accuracy']*100:.2f}%)")
+    # print(f"  F1-Score: {metrics['mechanism_f1']:.4f}")
     
     print("="*70)
 
@@ -195,25 +195,25 @@ def evaluate_multitask_simple(model: nn.Module,
         3
     )
 
-    #Step 4: Compute mechanism confusion matrix
-    mechanism_cm = print_mechanism_confusion_matrix(
-        predictions['mechanism_true'],
-        predictions['mechanism_pred'],
-        2
-    )
+    # #Step 4: Compute mechanism confusion matrix
+    # mechanism_cm = print_mechanism_confusion_matrix(
+    #     predictions['mechanism_true'],
+    #     predictions['mechanism_pred'],
+    #     2
+    # )
 
-    #Step 5: Calculate calibration metrics
-    cb_metrics = calculate_calibration_metrics(predictions)
+    # #Step 5: Calculate calibration metrics
+    # cb_metrics = calculate_calibration_metrics(predictions)
     
     # Print results
     print_overall_metrics(metrics)
-    print_calibration_analysis(cb_metrics)
+    # print_calibration_analysis(cb_metrics)
     
     return {
         'predictions': predictions,
         'overall_metrics': metrics,
-        'calibration_metrics': cb_metrics,
-        'mechansim_confusion_matrix': mechanism_cm,
+        # 'calibration_metrics': cb_metrics,
+        # 'mechansim_confusion_matrix': mechanism_cm,
         'defect_confusion_matrix': defect_cm
     }
 

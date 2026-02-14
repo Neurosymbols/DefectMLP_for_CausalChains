@@ -11,6 +11,7 @@ from app.model import create_model
 from app.train import train_model, TrainingConfig
 from app.evaluate.evaluate_multitask import evaluate_multitask_simple
 from app.mlp_inference import predict, prepare_features, load_model
+from app.constants import PARAMETER_SPECS
 
 
 PREPROCESSING_PATH = "./app/multitask_model/preprocessing_artifacts.pkl"
@@ -109,8 +110,8 @@ def run_inference(dataloaders):
         preprocessing_path=PREPROCESSING_PATH
     )
 
-    # print("\nRunning evaluation...")
-    # evaluate_multitask_simple(model, dataloaders["test"])
+    print("\nRunning evaluation...")
+    evaluate_multitask_simple(model, dataloaders["test"])
 
     print("\nRunning single-board inference...")
     board = {
@@ -118,13 +119,17 @@ def run_inference(dataloaders):
         "stencil_thickness": 96,
         "paste_viscosity": 257,
         "ambient_rh": 40,
-        "ambient_temperature": 25
+        "ambient_temperature": 25,
+        "peak_reflow_temperature": 255,
+        "time_above_liquidus": 87
     }
 
     features = prepare_features(board, scaler, features)
     result = predict(
         model,
-        features
+        features,
+        board,
+        PARAMETER_SPECS
     )
     print(result)
 
